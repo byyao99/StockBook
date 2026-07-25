@@ -140,7 +140,7 @@ Each view follows the same shape: `load()` / `changePage()` / `applyFilter()` pl
 - Adding a backend resource means touching all layers: model in `internal/models` (with GORM tags, and registered in the `AutoMigrate` call in `db.Open`), CRUD methods on `db.DB`, a handler struct with a `New*Handler(s *db.DB)` constructor, and route registration in `internal/router/router.go`.
 - Migrations are automatic (`AutoMigrate` on startup), which adds columns/tables but does not drop or alter existing ones; destructive schema changes must be handled manually.
 - CORS is permissive (`internal/router/router.go`) for local dev; tighten before any real deployment.
-- `main.go` runs the server under `http.Server` with signal-driven graceful shutdown (SIGINT/SIGTERM → `Shutdown` with a 10s drain → `db.Close`). `GET /health` calls `db.Ping` so it reflects DB connectivity.
+- `main.go` runs the server under `http.Server` with signal-driven graceful shutdown (SIGINT/SIGTERM → `Shutdown` with a 10s drain → `db.Close`). `GET /health` calls `db.Ping` so it reflects DB connectivity, and reports `started_at`, `uptime` and `revision`. Those exist to answer "is the server running the code I just wrote?" — `go run .` does not reload on edit, and a stale process serving an old contract is indistinguishable from a bug in the new one until you can see it started before the change. `revision` is only stamped for built binaries, so `started_at` is the signal to trust.
 - Code comments and all user-facing strings are in English.
 
 ## Deliberately out of scope

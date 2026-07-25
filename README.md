@@ -28,6 +28,8 @@ Open http://localhost:5173, sign in as `admin`, add an instrument on the **Instr
 | `AUTH_SECRET` | random | HMAC key for bearer tokens. Unset means a fresh key each start, so tokens do not survive a restart — set it in any real deployment. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | — | Seeds an admin when both are set and no users exist yet |
 
+`GET /health` reports `started_at` and `uptime` alongside the DB check. The backend does **not** hot-reload — after changing Go code, restart `go run .`, and check the start time if a request behaves like the old contract.
+
 ## Tests
 
 ```bash

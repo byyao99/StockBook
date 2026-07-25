@@ -4,6 +4,7 @@ package router
 import (
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -29,13 +30,25 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 	transaction := handlers.NewTransactionHandler(s)
 	position := handlers.NewPositionHandler(s)
 
-	// Health check (also verifies the database connection)
+	// Health check (also verifies the database connection).
+	//
+	// started_at and revision answer "is the server running the code I just
+	// wrote?". `go run .` does not reload on edit, so a stale process serving an
+	// old contract looks exactly like a bug in the new one — a start time older
+	// than the change is the quickest way to tell those apart.
+	startedAt := time.Now()
+	revision := buildRevision()
 	r.GET("/health", func(c *gin.Context) {
 		if err := s.Ping(); err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		c.JSON(http.StatusOK, gin.H{
+			"status":     "ok",
+			"started_at": startedAt.Format(time.RFC3339),
+			"uptime":     time.Since(startedAt).Round(time.Second).String(),
+			"revision":   revision,
+		})
 	})
 
 	v1 := r.Group("/api/v1")
@@ -126,4 +139,34 @@ func cors() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// buildRevision reports the commit the binary was built from, when the
+// toolchain stamped one. `go run` usually does not, so this is a bonus for
+// built binaries rather than something to rely on — started_at is the signal
+// that always works.
+func buildRevision() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	var revision, modified string
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value
+		}
+	}
+	if revision == "" {
+		return "unknown"
+	}
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	if modified == "true" {
+		return revision + "-dirty"
+	}
+	return revision
 }
