@@ -58,6 +58,15 @@ func (r *instrumentRequest) normalize() error {
 	if r.Symbol == "" {
 		return errEmptySymbol
 	}
+	// A symbol carrying an exchange suffix is a provider ticker pasted whole.
+	// The suffix is derived from the market, so keeping it would produce
+	// "2330.TW.TW", and the only symptom would be a quote that never arrives —
+	// long after the mistake was made.
+	if suffix, hasSuffix := quotes.ExchangeSuffix(r.Symbol); hasSuffix {
+		return &validationError{fmt.Sprintf(
+			"symbol should not include the %s exchange suffix; enter %q and select the market instead",
+			suffix, strings.TrimSuffix(r.Symbol, suffix))}
+	}
 	market, ok := models.CanonicalMarket(strings.TrimSpace(r.Market))
 	if !ok {
 		return errUnknownMarket

@@ -344,3 +344,35 @@ func (e *testEnv) seedInstrumentIn(t *testing.T, symbol, market string, currency
 	}
 	return item
 }
+
+// Pasting a whole provider ticker into the symbol field is refused at entry,
+// because the exchange suffix comes from the market: "2330.TW" filed under TWSE
+// would be looked up as "2330.TW.TW" and simply never find a quote.
+func TestSymbolRejectsAPastedExchangeSuffix(t *testing.T) {
+	e := setup(t)
+	admin := e.token(t, "admin", models.RoleAdmin)
+
+	for _, symbol := range []string{"2330.TW", "2330.tw", "6488.TWO"} {
+		rec := e.do(t, http.MethodPost, "/api/v1/instruments", map[string]any{
+			"symbol": symbol, "name": "TSMC", "market": "TWSE",
+		}, admin)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: got %d, want 400 (body: %s)", symbol, rec.Code, rec.Body.String())
+			continue
+		}
+		// The message must name the symbol to use, not just say no.
+		if !strings.Contains(rec.Body.String(), "2330") && !strings.Contains(rec.Body.String(), "6488") {
+			t.Errorf("%s: error should suggest the bare symbol (body: %s)", symbol, rec.Body.String())
+		}
+	}
+
+	// The bare symbol is accepted, and US symbols with a hyphen are unaffected.
+	for _, tc := range []struct{ symbol, market string }{{"2330", "TWSE"}, {"BRK-B", "NYSE"}} {
+		rec := e.do(t, http.MethodPost, "/api/v1/instruments", map[string]any{
+			"symbol": tc.symbol, "name": "Test", "market": tc.market,
+		}, admin)
+		if rec.Code != http.StatusCreated {
+			t.Errorf("%s: got %d, want 201 (body: %s)", tc.symbol, rec.Code, rec.Body.String())
+		}
+	}
+}

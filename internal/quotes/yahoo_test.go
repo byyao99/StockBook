@@ -183,3 +183,34 @@ func TestToMinorUnitsRoundsRatherThanTruncates(t *testing.T) {
 		}
 	}
 }
+
+// A pasted provider ticker must be recognizable at entry time, before it turns
+// into a double-suffixed lookup that only fails much later.
+func TestExchangeSuffix(t *testing.T) {
+	tests := []struct {
+		symbol string
+		want   string
+		ok     bool
+	}{
+		{"2330.TW", ".TW", true},
+		{"6488.TWO", ".TWO", true},
+		{"2330.tw", ".TW", true}, // case-insensitive, since symbols arrive unnormalized
+		{"2330", "", false},
+		{"TSLA", "", false},
+		{"BRK-B", "", false},
+	}
+	for _, tc := range tests {
+		got, ok := ExchangeSuffix(tc.symbol)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("ExchangeSuffix(%q) = %q, %v; want %q, %v", tc.symbol, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// The longer suffix has to win, or ".TWO" would be reported as ".TW" and the
+// suggested symbol would keep a stray "O".
+func TestExchangeSuffixPrefersTheLongerMatch(t *testing.T) {
+	if got, _ := ExchangeSuffix("6488.TWO"); got != ".TWO" {
+		t.Errorf("got %q, want .TWO", got)
+	}
+}

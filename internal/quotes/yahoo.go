@@ -77,6 +77,27 @@ func Ticker(symbol, market string) (string, bool) {
 	}
 }
 
+// exchangeSuffixes are the suffixes Ticker appends itself. A symbol that already
+// carries one has had a full provider ticker pasted into it.
+var exchangeSuffixes = []string{".TWO", ".TW"}
+
+// ExchangeSuffix reports whether symbol already ends in a market suffix that
+// Ticker would append on its own.
+//
+// It exists so a pasted provider ticker can be caught when the instrument is
+// created rather than when a quote is first fetched: "2330.TW" filed under TWSE
+// would otherwise be looked up as "2330.TW.TW", and the only symptom would be a
+// missing quote long after the mistake was made.
+func ExchangeSuffix(symbol string) (string, bool) {
+	upper := strings.ToUpper(symbol)
+	for _, suffix := range exchangeSuffixes {
+		if strings.HasSuffix(upper, suffix) {
+			return suffix, true
+		}
+	}
+	return "", false
+}
+
 // chartResponse is the slice of Yahoo's payload this package reads. Their error
 // object carries a human-readable description, which is passed through to the
 // caller rather than replaced with a generic message — when a fetch fails, what
