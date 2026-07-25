@@ -71,9 +71,16 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, fetcher handlers.QuoteFet
 			i.PUT("/:id", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Update)
 			i.PATCH("/:id/price", middleware.RequireRole(am, s, models.RoleAdmin), instrument.SetPrice)
 			// Fetching quotes reaches an external provider, so it is an explicit
-			// admin action rather than a background job: a caller who triggers it
-			// gets the per-symbol failures back instead of them landing in a log.
-			i.POST("/refresh-quotes", middleware.RequireRole(am, s, models.RoleAdmin), instrument.RefreshQuotes)
+			// action rather than a background job: a caller who triggers it gets
+			// the per-symbol failures back instead of them landing in a log.
+			//
+			// Any signed-in user may run it. A holdings page without current
+			// prices shows no unrealized profit or loss, so making this an
+			// admin's job would leave everyone else unable to fix a stale book,
+			// and a market price is shared objective data rather than something
+			// the caller owns. The rate limit is what protects the outbound
+			// dependency; the handler additionally leaves current quotes alone.
+			i.POST("/refresh-quotes", middleware.RateLimit(6, time.Minute), instrument.RefreshQuotes)
 			i.DELETE("/:id", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Delete)
 		}
 

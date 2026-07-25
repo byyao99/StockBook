@@ -41,6 +41,7 @@ func (s *stubFetcher) Fetch(_ context.Context, ticker string) (quotes.Quote, err
 type refreshResponse struct {
 	Updated int `json:"updated"`
 	Failed  int `json:"failed"`
+	Fresh   int `json:"fresh"`
 	Results []struct {
 		Symbol    string `json:"symbol"`
 		Status    string `json:"status"`
@@ -65,15 +66,68 @@ func (e *testEnv) refresh(t *testing.T, token string) (*refreshResponse, int) {
 	return &body.Data, rec.Code
 }
 
-func TestRefreshQuotesRequiresAdmin(t *testing.T) {
+// Refreshing quotes needs a session but not a privileged one: a holdings page
+// is useless without current prices, so a plain user must be able to fix a
+// stale book rather than waiting on an admin.
+func TestRefreshQuotesNeedsAuthButNotAdmin(t *testing.T) {
 	e := setupWithFetcher(t, &stubFetcher{})
 
 	if rec := e.do(t, http.MethodPost, "/api/v1/instruments/refresh-quotes", nil, ""); rec.Code != http.StatusUnauthorized {
 		t.Errorf("no token: got %d, want 401", rec.Code)
 	}
 	user := e.token(t, "trader", models.RoleUser)
-	if rec := e.do(t, http.MethodPost, "/api/v1/instruments/refresh-quotes", nil, user); rec.Code != http.StatusForbidden {
-		t.Errorf("user token: got %d, want 403", rec.Code)
+	if rec := e.do(t, http.MethodPost, "/api/v1/instruments/refresh-quotes", nil, user); rec.Code != http.StatusOK {
+		t.Errorf("user token: got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// Every fetch is an outbound call to a third party, so a quote that is already
+// current must not be re-requested. Pressing refresh twice costs one round of
+// traffic, not two.
+func TestRefreshSkipsQuotesThatAreStillCurrent(t *testing.T) {
+	fetcher := &stubFetcher{
+		quotes: map[string]quotes.Quote{
+			"TSLA": {Price: 31303, Currency: models.CurrencyUSD, AsOf: time.Now()},
+		},
+	}
+	e := setupWithFetcher(t, fetcher)
+	user := e.token(t, "trader", models.RoleUser)
+	e.seedInstrumentIn(t, "TSLA", "NASDAQ", models.CurrencyUSD)
+
+	first, _ := e.refresh(t, user)
+	if first.Updated != 1 || first.Fresh != 0 {
+		t.Fatalf("first run: updated=%d fresh=%d, want 1/0", first.Updated, first.Fresh)
+	}
+
+	second, _ := e.refresh(t, user)
+	if second.Updated != 0 || second.Fresh != 1 {
+		t.Errorf("second run: updated=%d fresh=%d, want 0/1", second.Updated, second.Fresh)
+	}
+	// A skipped-as-current instrument is counted, not listed: on a repeat press
+	// it would be the whole list and none of it is actionable.
+	if len(second.Results) != 0 {
+		t.Errorf("second run listed %d results, want none", len(second.Results))
+	}
+	if len(fetcher.calls) != 1 {
+		t.Errorf("provider was called %d times, want 1", len(fetcher.calls))
+	}
+}
+
+// An instrument with no quote at all is never "fresh" — that is precisely the
+// case a refresh exists to fix.
+func TestRefreshAlwaysFetchesAnUnquotedInstrument(t *testing.T) {
+	fetcher := &stubFetcher{
+		quotes: map[string]quotes.Quote{
+			"TSLA": {Price: 31303, Currency: models.CurrencyUSD, AsOf: time.Now()},
+		},
+	}
+	e := setupWithFetcher(t, fetcher)
+	user := e.token(t, "trader", models.RoleUser)
+	e.seedInstrumentIn(t, "TSLA", "NASDAQ", models.CurrencyUSD)
+
+	report, _ := e.refresh(t, user)
+	if report.Updated != 1 || report.Fresh != 0 {
+		t.Errorf("updated=%d fresh=%d, want 1/0", report.Updated, report.Fresh)
 	}
 }
 
@@ -151,7 +205,11 @@ func TestFailedRefreshLeavesThePreviousQuoteAlone(t *testing.T) {
 
 	inst := e.seedInstrumentIn(t, "TSLA", "NASDAQ", models.CurrencyUSD)
 	price := int64(30000)
-	before, err := e.s.UpdateInstrumentPrice(inst.ID, &price, nil)
+	// Stamp the seeded quote as old, or the freshness guard would skip it and
+	// the failing fetch under test would never be attempted.
+	stale := time.Now().Add(-24 * time.Hour)
+	before, err := e.s.UpdateInstrumentPrice(inst.ID,
+		db.QuoteUpdate{Price: &price, AsOf: &stale, CheckedAt: &stale})
 	if err != nil {
 		t.Fatalf("seed price: %v", err)
 	}
@@ -295,10 +353,10 @@ func TestSummaryIsReportedPerCurrency(t *testing.T) {
 	twdPrice, usdPrice := int64(235000), int64(31303)
 	tw := e.seedInstrumentIn(t, "2330", "TWSE", models.CurrencyTWD)
 	us := e.seedInstrumentIn(t, "TSLA", "NASDAQ", models.CurrencyUSD)
-	if _, err := e.s.UpdateInstrumentPrice(tw.ID, &twdPrice, nil); err != nil {
+	if _, err := e.s.UpdateInstrumentPrice(tw.ID, db.QuoteUpdate{Price: &twdPrice}); err != nil {
 		t.Fatalf("price: %v", err)
 	}
-	if _, err := e.s.UpdateInstrumentPrice(us.ID, &usdPrice, nil); err != nil {
+	if _, err := e.s.UpdateInstrumentPrice(us.ID, db.QuoteUpdate{Price: &usdPrice}); err != nil {
 		t.Fatalf("price: %v", err)
 	}
 

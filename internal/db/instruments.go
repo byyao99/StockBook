@@ -124,22 +124,43 @@ func (d *DB) UpdateInstrument(id string, item models.Instrument) (models.Instrum
 	return d.GetInstrument(id)
 }
 
-// UpdateInstrumentPrice sets (or clears, when price is nil) an instrument's
-// quote and stamps when it was set. Clearing the price also clears the stamp, so
-// a nil quote never carries a misleading "as of" time.
+// QuoteUpdate carries a new quote and the two timestamps that describe it.
 //
-// asOf records when the quote was actually good for. A fetched quote passes the
-// market timestamp the provider reported, so the staleness shown in the UI
-// reflects the price's own age rather than when we happened to ask for it; a
-// hand-entered quote passes nil and is stamped now.
-func (d *DB) UpdateInstrumentPrice(id string, price *int64, asOf *time.Time) (models.Instrument, error) {
-	updates := map[string]any{"last_price": price, "price_updated_at": nil}
+// AsOf is when the price was good for — a fetched quote passes the market
+// timestamp the provider reported, so the staleness shown in the UI reflects the
+// price's own age rather than when we happened to ask. CheckedAt is when the
+// provider was last asked, which is what decides whether asking again is worth
+// an outbound call. They are genuinely different: a Friday closing price fetched
+// on Monday is a day old to a reader and a moment old to the fetcher.
+//
+// Both default to now when nil, which is right for a hand-entered quote.
+type QuoteUpdate struct {
+	Price     *int64
+	AsOf      *time.Time
+	CheckedAt *time.Time
+}
+
+// UpdateInstrumentPrice sets (or clears, when Price is nil) an instrument's
+// quote and its timestamps. Clearing the price clears both stamps, so a nil
+// quote never carries a misleading "as of" time.
+func (d *DB) UpdateInstrumentPrice(id string, q QuoteUpdate) (models.Instrument, error) {
+	price := q.Price
+	updates := map[string]any{
+		"last_price":       price,
+		"price_updated_at": nil,
+		"quote_checked_at": nil,
+	}
 	if price != nil {
-		stamp := time.Now()
-		if asOf != nil {
-			stamp = *asOf
+		asOf := time.Now()
+		if q.AsOf != nil {
+			asOf = *q.AsOf
 		}
-		updates["price_updated_at"] = &stamp
+		checkedAt := time.Now()
+		if q.CheckedAt != nil {
+			checkedAt = *q.CheckedAt
+		}
+		updates["price_updated_at"] = &asOf
+		updates["quote_checked_at"] = &checkedAt
 	}
 	res := d.db.Model(&models.Instrument{}).Where("id = ?", id).Updates(updates)
 	if res.Error != nil {

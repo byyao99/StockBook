@@ -53,7 +53,9 @@ An instrument with no quote reports an *unknown* market value, not zero — the 
 
 ## Quotes
 
-Press **Refresh quotes** on the Instruments page (admin only) to pull current prices from Yahoo Finance. Taiwan listings are looked up as `2330.TW` / `6488.TWO` and US listings by their bare symbol.
+Press **Refresh quotes** on the Holdings or Instruments page to pull current prices from Yahoo Finance. Taiwan listings are looked up as `2330.TW` / `6488.TWO` and US listings by their bare symbol — enter the bare symbol and pick the market; the suffix is added for you.
+
+Any signed-in user can refresh: the holdings page is built on unrealized profit and loss, so making that an admin's job would leave everyone else stuck with a stale book. Quotes already checked within the last 15 minutes are left alone, and the endpoint is rate-limited, so an open button cannot turn into a flood of outbound calls. Setting a price *by hand* is still admin-only.
 
 Yahoo has no official public API; this uses the undocumented endpoint behind their charts, which needs no key but is unsupported and may break. Everything provider-specific lives in `internal/quotes`, so swapping in another source is a one-file change.
 
@@ -73,7 +75,7 @@ All routes are under `/api/v1`. Single resources return `{"data": ...}`, lists a
 | `GET` | `/instruments`, `/instruments/:id` | authenticated |
 | `POST` `PUT` `DELETE` | `/instruments`, `/instruments/:id` | admin |
 | `PATCH` | `/instruments/:id/price` | admin |
-| `POST` | `/instruments/refresh-quotes` | admin |
+| `POST` | `/instruments/refresh-quotes` | authenticated, rate-limited 6/min |
 | `GET` `POST` | `/transactions` | authenticated, own book only |
 | `GET` `PUT` `DELETE` | `/transactions/:id` | authenticated, own book only |
 | `GET` | `/positions`, `/positions/summary` | authenticated, own book only |

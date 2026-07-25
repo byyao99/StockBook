@@ -75,7 +75,7 @@ func (e *testEnv) seedInstrument(t *testing.T, symbol string, lastPrice *int64) 
 		t.Fatalf("CreateInstrument: %v", err)
 	}
 	if lastPrice != nil {
-		item, err = e.s.UpdateInstrumentPrice(item.ID, lastPrice, nil)
+		item, err = e.s.UpdateInstrumentPrice(item.ID, db.QuoteUpdate{Price: lastPrice})
 		if err != nil {
 			t.Fatalf("UpdateInstrumentPrice: %v", err)
 		}

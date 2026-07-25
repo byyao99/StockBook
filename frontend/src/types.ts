@@ -39,10 +39,16 @@ export interface Instrument {
   // Fixed once trades exist against the instrument: changing it would
   // reinterpret every cost basis already recorded under it.
   currency: Currency
-  // The quote, maintained by hand. null means no quote has been set, which the
-  // UI must show as unknown rather than as zero.
+  // The quote, fetched or maintained by hand. null means no quote has been set,
+  // which the UI must show as unknown rather than as zero.
   last_price: number | null
+  // When the price was good for — the market timestamp, so displayed staleness
+  // is the price's own age. This is the one to show a user.
   price_updated_at: string | null
+  // When the provider was last asked. Distinct from the above: a Friday close
+  // fetched on Monday is a day old to a reader and a moment old to the fetcher.
+  // The server uses this to decide whether refetching is worth the call.
+  quote_checked_at: string | null
   created_at: string
   updated_at: string
 }
@@ -161,5 +167,9 @@ export interface RefreshResult {
 export interface RefreshReport {
   updated: number
   failed: number
+  // Instruments whose quote was already current and so left untouched. They are
+  // counted but deliberately absent from `results`: on a repeat refresh they
+  // would be the whole list, and none of them is actionable.
+  fresh: number
   results: RefreshResult[]
 }

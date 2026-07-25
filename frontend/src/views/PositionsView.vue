@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { positionApi } from '../api/client'
+import { instrumentApi, positionApi } from '../api/client'
 import {
   formatCents,
   formatCentsOrUnknown,
@@ -30,7 +30,9 @@ const total = ref(0)
 const offset = ref(0)
 const includeClosed = ref(false)
 const loading = ref(false)
+const refreshing = ref(false)
 const error = ref('')
+const success = ref('')
 
 async function load() {
   loading.value = true
@@ -60,6 +62,32 @@ function changePage(newOffset: number) {
   load()
 }
 
+// Pulling fresh quotes belongs on this page as much as on the instruments one:
+// unrealized profit and loss is what this page is for, and it is only as
+// current as the prices behind it. Quotes newer than a few minutes are left
+// alone by the server, so pressing this repeatedly is cheap.
+async function refreshQuotes() {
+  refreshing.value = true
+  error.value = ''
+  success.value = ''
+  try {
+    const report = await instrumentApi.refreshQuotes()
+    success.value = `Updated ${report.updated} ${report.updated === 1 ? 'quote' : 'quotes'}.`
+    if (report.fresh > 0) {
+      // Without this a no-op refresh looks like a button that does nothing.
+      success.value += ` ${report.fresh} already current.`
+    }
+    if (report.failed > 0) {
+      success.value += ` ${report.failed} could not be fetched — see the Instruments page.`
+    }
+    await load()
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    refreshing.value = false
+  }
+}
+
 // Toggling the closed filter restarts paging from the first page.
 function toggleClosed() {
   offset.value = 0
@@ -78,6 +106,13 @@ onMounted(load)
 <template>
   <div>
     <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="success" class="success">{{ success }}</p>
+
+    <div class="page-actions">
+      <button class="btn-secondary" :disabled="refreshing" @click="refreshQuotes">
+        {{ refreshing ? 'Fetching quotes…' : 'Refresh quotes' }}
+      </button>
+    </div>
 
     <!-- One block per currency. Side by side rather than summed, because a
          combined figure would require an exchange rate this system does not
@@ -120,8 +155,9 @@ onMounted(load)
       <p v-if="unpricedCount(s) > 0" class="notice">
         {{ unpricedCount(s) }} open {{ unpricedCount(s) === 1 ? 'holding has' : 'holdings have' }}
         no quote, so the {{ s.currency }} market value and unrealized figures exclude
-        {{ unpricedCount(s) === 1 ? 'it' : 'them' }}. An admin can refresh or set
-        quotes on the Instruments page.
+        {{ unpricedCount(s) === 1 ? 'it' : 'them' }}. Try Refresh quotes above; if
+        that cannot reach {{ unpricedCount(s) === 1 ? 'it' : 'them' }}, an admin
+        can set a price by hand on the Instruments page.
       </p>
     </section>
 
@@ -189,6 +225,14 @@ onMounted(load)
 </template>
 
 <style scoped>
+.page-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.page-actions button {
+  width: auto;
+}
 .currency-block {
   margin-bottom: 20px;
 }

@@ -206,7 +206,7 @@ func (h *InstrumentHandler) SetPrice(c *gin.Context) {
 		return
 	}
 
-	item, err := h.db.UpdateInstrumentPrice(c.Param("id"), req.LastPrice, nil)
+	item, err := h.db.UpdateInstrumentPrice(c.Param("id"), db.QuoteUpdate{Price: req.LastPrice})
 	if err != nil {
 		respondDBError(c, err)
 		return
@@ -241,12 +241,32 @@ type refreshResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// refreshTimeout bounds a whole refresh run, however many instruments it covers.
-const refreshTimeout = 60 * time.Second
+const (
+	// refreshTimeout bounds a whole refresh run, however many instruments it covers.
+	refreshTimeout = 60 * time.Second
 
-// RefreshQuotes handles POST /api/v1/instruments/refresh-quotes (admin only).
-// It fetches a current price for every instrument the provider can address and
-// reports the outcome per instrument.
+	// quoteFreshness is how recent a quote has to be for a refresh to leave it
+	// alone. Every fetch is an outbound call to a third party, and this endpoint
+	// is open to any signed-in user, so repeatedly pressing refresh must not turn
+	// into repeated traffic. For a ledger of trades that already happened, a
+	// price this old is current enough.
+	quoteFreshness = 15 * time.Minute
+)
+
+// RefreshQuotes handles POST /api/v1/instruments/refresh-quotes for any
+// authenticated user. It fetches a current price for every instrument whose
+// quote has gone stale and reports the outcome per instrument.
+//
+// It is open to plain users, not just admins, because the holdings page is
+// built on unrealized profit and loss and that is dead without a current price:
+// gating quotes behind an admin would leave every other user unable to do
+// anything about a stale book. Quotes are shared, objective market data rather
+// than anything the caller owns, so refreshing them is not a privileged act.
+//
+// Two things keep that from becoming a way to hammer the provider: instruments
+// quoted within quoteFreshness are left alone entirely, so pressing refresh
+// twice costs one round of traffic, and the route itself is rate-limited per
+// client IP.
 //
 // A partial failure is not an error for the run as a whole: one delisted ticker
 // must not stop the other twenty from updating. The response is 200 with each
@@ -270,9 +290,16 @@ func (h *InstrumentHandler) RefreshQuotes(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), refreshTimeout)
 	defer cancel()
 
+	// Results cover only the instruments worth reporting on. Ones already
+	// current are counted but left out: on a repeat press they would be the
+	// whole list, and none of them is something the caller can act on.
 	results := make([]refreshResult, 0, len(items))
-	updated, failed := 0, 0
+	updated, failed, fresh := 0, 0, 0
 	for _, item := range items {
+		if isQuoteFresh(item) {
+			fresh++
+			continue
+		}
 		result := h.refreshOne(ctx, item)
 		switch result.Status {
 		case "updated":
@@ -288,14 +315,33 @@ func (h *InstrumentHandler) RefreshQuotes(c *gin.Context) {
 		slog.String("actor_id", callerID(c)),
 		slog.Int("updated", updated),
 		slog.Int("failed", failed),
+		slog.Int("fresh", fresh),
 		slog.Int("total", len(items)),
 	)
 
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
 		"updated": updated,
 		"failed":  failed,
+		"fresh":   fresh,
 		"results": results,
 	}})
+}
+
+// isQuoteFresh reports whether the provider was asked recently enough that
+// asking again is not worth the call.
+//
+// This deliberately reads QuoteCheckedAt rather than PriceUpdatedAt. The latter
+// is the market time the price was good for, which for a closed market is hours
+// or days old however recently it was fetched — using it here would mean every
+// refresh outside trading hours re-requested everything.
+//
+// An instrument with no quote at all is never fresh: that is exactly the case a
+// refresh exists to fix.
+func isQuoteFresh(item models.Instrument) bool {
+	if item.LastPrice == nil || item.QuoteCheckedAt == nil {
+		return false
+	}
+	return time.Since(*item.QuoteCheckedAt) < quoteFreshness
 }
 
 // refreshOne fetches and stores a single instrument's quote, converting every
@@ -339,7 +385,7 @@ func (h *InstrumentHandler) refreshOne(ctx context.Context, item models.Instrume
 
 	price := quote.Price
 	asOf := quote.AsOf
-	if _, err := h.db.UpdateInstrumentPrice(item.ID, &price, &asOf); err != nil {
+	if _, err := h.db.UpdateInstrumentPrice(item.ID, db.QuoteUpdate{Price: &price, AsOf: &asOf}); err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
 		return result

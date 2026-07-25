@@ -102,6 +102,13 @@ func CanonicalMarket(m string) (string, bool) {
 //
 // Currency is fixed once trades exist against the instrument: changing it would
 // silently reinterpret every historical cost basis recorded under it.
+//
+// The two quote timestamps answer different questions and must not be merged.
+// PriceUpdatedAt is when the price was good for — the market timestamp a
+// provider reported — and drives the staleness a user sees. QuoteCheckedAt is
+// when the provider was last asked, and drives whether asking again is worth
+// the outbound call. A Friday closing price fetched on Monday is a day old to
+// the reader and a moment old to the fetcher, and both readings are correct.
 type Instrument struct {
 	ID             string     `gorm:"primaryKey" json:"id"`
 	Symbol         string     `gorm:"uniqueIndex" json:"symbol"`
@@ -110,6 +117,7 @@ type Instrument struct {
 	Currency       Currency   `gorm:"not null;default:TWD" json:"currency"`
 	LastPrice      *int64     `json:"last_price"`
 	PriceUpdatedAt *time.Time `json:"price_updated_at"`
+	QuoteCheckedAt *time.Time `json:"quote_checked_at"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 }

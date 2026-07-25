@@ -80,11 +80,15 @@ An instrument's `LastPrice` is a `*int64` maintained by hand; nil means no quote
 
 `internal/quotes` fetches prices from Yahoo Finance's undocumented chart endpoint (no API key, no official support — it has broken before). `quotes.Ticker` maps `(symbol, market)` to the ticker Yahoo knows: `.TW` for TWSE, `.TWO` for TPEX, bare for NYSE/NASDAQ, and nothing for `OTHER`. Nothing outside that package knows where prices come from, so replacing the provider is a one-file job.
 
-`POST /api/v1/instruments/refresh-quotes` (admin) drives it. It is a deliberate, caller-triggered action rather than a background ticker, because **a background job has nowhere to return errors to** — a failed symbol would land in a log nobody reads. The endpoint returns 200 with a per-instrument result (`updated` / `skipped` / `failed`), each failure carrying **the provider's own wording** ("No data found, symbol may be delisted"), which is the only actionable diagnostic for a bad ticker. A partial failure is not an error for the run: one delisted symbol must not stop the other twenty from updating. To schedule it, point cron at the endpoint.
+`POST /api/v1/instruments/refresh-quotes` drives it. It is a deliberate, caller-triggered action rather than a background ticker, because **a background job has nowhere to return errors to** — a failed symbol would land in a log nobody reads. The endpoint returns 200 with a per-instrument result (`updated` / `skipped` / `failed`), each failure carrying **the provider's own wording** ("No data found, symbol may be delisted"), which is the only actionable diagnostic for a bad ticker. A partial failure is not an error for the run: one delisted symbol must not stop the other twenty from updating. To schedule it, point cron at the endpoint.
+
+**It is open to any authenticated user, not just admins.** The holdings page exists to show unrealized profit and loss, which is dead without a current price; gating refresh behind an admin would leave every other user unable to do anything about a stale book, and a market price is shared objective data rather than something a caller owns. Two things keep an open endpoint from becoming a way to hammer a third party: instruments checked within `quoteFreshness` (15 minutes) are skipped entirely, so pressing refresh twice costs one round of traffic, and the route carries `middleware.RateLimit(6, time.Minute)`. Skipped-as-current instruments are counted in `fresh` but deliberately left out of `results` — on a repeat press they would be the whole list and none of them is actionable. Setting a price *by hand* (`PATCH /:id/price`) remains admin-only, as does everything else about the master data.
+
+**The two quote timestamps are not interchangeable.** `Instrument.PriceUpdatedAt` is when the price was good for (the market timestamp the provider reported) and drives the staleness a user sees; `Instrument.QuoteCheckedAt` is when the provider was last asked and drives the freshness skip. Merging them breaks one job or the other: `isQuoteFresh` reading `PriceUpdatedAt` would find every quote stale outside trading hours and refetch the whole book on every press, while showing `QuoteCheckedAt` to a user would make a Friday close fetched on Monday look like a live price. `db.QuoteUpdate` carries both, each defaulting to now.
 
 Two rules protect the book from the provider:
 
-- **A failed fetch changes nothing.** The instrument keeps its previous quote *and its previous timestamp*, so the staleness rendered by `quoteAge()` in the UI stays truthful. Restamping a failed refresh would make a stale price look fresh; writing a zero would make it look worthless.
+- **A failed fetch changes nothing.** The instrument keeps its previous quote *and both its timestamps*, so the staleness rendered by `quoteAge()` in the UI stays truthful and a symbol whose market was just corrected is retried immediately rather than being suppressed for 15 minutes. Restamping a failed refresh would make a stale price look fresh; writing a zero would make it look worthless.
 - **A currency mismatch is a failure, not a price.** If the provider quotes an instrument in a currency the book does not have on file, the fetch is reported as failed and nothing is written — adopting it would reinterpret every cost basis already recorded. Only an instrument with *no* currency yet adopts the provider's (`db.SetInstrumentCurrency`, which refuses to overwrite).
 
 Stored quotes carry the **market timestamp the provider reported**, not the moment of the request (`db.UpdateInstrumentPrice` takes an `asOf`), so age shown to a user is the price's own age. Hand-entered quotes pass nil and are stamped now.
@@ -102,7 +106,8 @@ Stored quotes carry the **market timestamp the provider reported**, not the mome
 | Routes | Access |
 |---|---|
 | `GET /instruments`, `GET /instruments/:id` | any authenticated user (needed to enter a trade) |
-| `POST/PUT/DELETE /instruments/:id`, `PATCH /instruments/:id/price`, `POST /instruments/refresh-quotes` | admin |
+| `POST/PUT/DELETE /instruments/:id`, `PATCH /instruments/:id/price` | admin |
+| `POST /instruments/refresh-quotes` | any authenticated user, rate-limited 6/min per IP |
 | `/transactions/*`, `/positions/*` | any authenticated user, **scoped to themselves** |
 | `/users/*` | admin |
 

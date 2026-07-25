@@ -148,6 +148,10 @@ async function refreshQuotes() {
     const report = await instrumentApi.refreshQuotes()
     refreshResults.value = report.results.filter((r) => r.status !== 'updated')
     success.value = `Updated ${report.updated} ${report.updated === 1 ? 'quote' : 'quotes'}.`
+    if (report.fresh > 0) {
+      // Say why nothing happened, or a no-op refresh looks like a broken button.
+      success.value += ` ${report.fresh} already current.`
+    }
     if (report.failed > 0) {
       success.value += ` ${report.failed} could not be fetched — see below.`
     }
@@ -235,7 +239,7 @@ onMounted(load)
       <div class="head">
         <h2 class="section-title">Instruments ({{ total }})</h2>
         <div class="filter">
-          <button v-if="isAdmin" class="btn-primary" :disabled="refreshing" @click="refreshQuotes">
+          <button class="btn-primary" :disabled="refreshing" @click="refreshQuotes">
             {{ refreshing ? 'Fetching…' : 'Refresh quotes' }}
           </button>
           <input
@@ -317,7 +321,8 @@ onMounted(load)
       </div>
       <p v-if="isAdmin" class="muted hint">
         Clear a price box and save to mark an instrument as unquoted; its holdings
-        then show an unknown market value rather than zero.
+        then show an unknown market value rather than zero. Refreshing leaves
+        quotes newer than 15 minutes alone.
       </p>
 
       <PaginationBar :limit="PAGE_SIZE" :offset="offset" :total="total" @change="changePage" />
