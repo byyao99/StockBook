@@ -1,0 +1,14 @@
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+
+# Build output
+/stockbook
+/frontend/dist
+/frontend/node_modules
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
