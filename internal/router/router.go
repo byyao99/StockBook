@@ -83,7 +83,10 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 		{
 			i.GET("", instrument.List)
 			i.GET("/:id", instrument.Get)
-			i.GET("/search", middleware.RateLimit(30, time.Minute), instrument.Search)
+			// Typed into interactively, so the ceiling is higher than a deliberate
+			// button press would need; the debounce in the picker is what keeps the
+			// actual rate far below it.
+			i.GET("/search", middleware.RateLimit(60, time.Minute), instrument.Search)
 			i.POST("", middleware.RateLimit(20, time.Minute), instrument.Create)
 			i.PUT("/:id", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Update)
 			i.PATCH("/:id/price", middleware.RequireRole(am, s, models.RoleAdmin), instrument.SetPrice)

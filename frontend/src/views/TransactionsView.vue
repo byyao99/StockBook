@@ -3,14 +3,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { instrumentApi, transactionApi } from '../api/client'
 import { formatCents, formatQty, fromCents, toCents } from '../money'
 import PaginationBar from '../components/PaginationBar.vue'
+import InstrumentPicker from '../components/InstrumentPicker.vue'
 import { SIDES } from '../types'
-import type {
-  Currency,
-  Instrument,
-  InstrumentCandidate,
-  Transaction,
-  TransactionSide,
-} from '../types'
+import type { Currency, Instrument, Transaction, TransactionSide } from '../types'
 
 const PAGE_SIZE = 20
 
@@ -49,59 +44,6 @@ const form = reactive<{
 
 function today(): string {
   return new Date().toISOString().slice(0, 10)
-}
-
-// Adding an instrument lives here rather than on a page of its own: an
-// instrument only exists to be traded, so the moment you need one is the moment
-// you are recording a trade in it. Candidates come from the price provider, so
-// what gets added is guaranteed quotable and arrives already priced.
-const lookupQuery = ref('')
-const candidates = ref<InstrumentCandidate[]>([])
-const searching = ref(false)
-const searched = ref(false)
-const showLookup = ref(false)
-
-async function lookup() {
-  const q = lookupQuery.value.trim()
-  if (!q) return
-  searching.value = true
-  searched.value = false
-  error.value = ''
-  success.value = ''
-  candidates.value = []
-  try {
-    candidates.value = await instrumentApi.search(q)
-    searched.value = true
-  } catch (e) {
-    error.value = (e as Error).message
-  } finally {
-    searching.value = false
-  }
-}
-
-async function addCandidate(candidate: InstrumentCandidate) {
-  error.value = ''
-  success.value = ''
-  try {
-    const created = await instrumentApi.create({
-      symbol: candidate.symbol,
-      market: candidate.market,
-    })
-    await loadInstruments()
-    // Select what was just added: the only reason to add it here is to trade it.
-    form.instrumentId = created.id
-    success.value = `Added ${created.symbol} — ${created.name}. Ready to record a trade.`
-    closeLookup()
-  } catch (e) {
-    error.value = (e as Error).message
-  }
-}
-
-function closeLookup() {
-  showLookup.value = false
-  lookupQuery.value = ''
-  candidates.value = []
-  searched.value = false
 }
 
 // A preview of the cash movement, computed the same way the server will. It is
@@ -150,9 +92,6 @@ async function loadInstruments() {
     // One large page: the dropdown needs every instrument, not a page of them.
     const page = await instrumentApi.list(100, 0)
     instruments.value = page.items
-    if (!form.instrumentId && page.items.length > 0) {
-      form.instrumentId = page.items[0].id
-    }
   } catch (e) {
     error.value = (e as Error).message
   }
@@ -172,7 +111,7 @@ function applyFilter() {
 function resetForm() {
   editingId.value = null
   Object.assign(form, {
-    instrumentId: instruments.value[0]?.id ?? '',
+    instrumentId: '',
     side: 'buy',
     quantity: 0,
     priceDollars: 0,
@@ -258,32 +197,20 @@ onMounted(async () => {
 
     <section class="card">
       <h2 class="section-title">{{ editingId ? 'Edit Trade' : 'Record a Trade' }}</h2>
-      <p v-if="instruments.length === 0" class="muted empty-hint">
-        No instruments yet — use <strong>can't find it?</strong> below to search
-        for one and add it.
-      </p>
       <form @submit.prevent="submit">
         <div class="grid">
-          <div class="field">
-            <label>
-              Instrument
-              <button
-                v-if="!editingId"
-                type="button"
-                class="link-button"
-                @click="showLookup = !showLookup"
-              >
-                {{ showLookup ? 'cancel' : "can't find it?" }}
-              </button>
-            </label>
+          <div class="field instrument-field">
+            <label>Instrument</label>
             <!-- The instrument cannot move once recorded: changing it would
                  shift the entry to a different holding, which the API expects
                  as a delete plus a fresh entry. -->
-            <select v-model="form.instrumentId" required :disabled="editingId !== null">
-              <option v-for="i in instruments" :key="i.id" :value="i.id">
-                {{ i.symbol }} — {{ i.name }} ({{ i.currency }})
-              </option>
-            </select>
+            <InstrumentPicker
+              v-model="form.instrumentId"
+              :instruments="instruments"
+              :disabled="editingId !== null"
+              @created="loadInstruments"
+              @error="error = $event"
+            />
           </div>
           <div class="field">
             <label>Side</label>
@@ -308,47 +235,6 @@ onMounted(async () => {
             <input v-model="form.tradedAt" type="date" :max="today()" required />
           </div>
         </div>
-        <div v-if="showLookup" class="lookup-panel">
-          <p class="muted lookup-hint">
-            Search by stock number or company name. The symbol, market, currency
-            and current price all come from the price provider, so there is
-            nothing to type and nothing to mistype. Chinese names are not
-            matched — use the stock number or the English name.
-          </p>
-          <div class="lookup">
-            <input
-              v-model="lookupQuery"
-              type="search"
-              placeholder="e.g. 2330, 6488, TSLA, taiwan semiconductor"
-              @keyup.enter.prevent="lookup"
-            />
-            <button type="button" class="btn-primary" :disabled="searching" @click="lookup">
-              {{ searching ? 'Searching…' : 'Search' }}
-            </button>
-          </div>
-
-          <p v-if="searched && candidates.length === 0" class="muted">
-            Nothing found that this app can track. Only TWSE, TPEX, NYSE and
-            NASDAQ listings can be priced, so other exchanges, indices and
-            futures are left out — an instrument with no quote could not be
-            valued anyway.
-          </p>
-          <ul v-if="candidates.length > 0" class="candidates">
-            <li v-for="c in candidates" :key="c.ticker">
-              <div class="candidate-id">
-                <strong>{{ c.symbol }}</strong>
-                <span class="ticker">{{ c.ticker }}</span>
-              </div>
-              <div class="candidate-name">{{ c.name }}</div>
-              <div class="muted candidate-meta">{{ c.market }} · {{ c.currency }}</div>
-              <button v-if="c.exists" type="button" class="btn-secondary" disabled>
-                Already added
-              </button>
-              <button v-else type="button" class="btn-primary" @click="addCandidate(c)">Add</button>
-            </li>
-          </ul>
-        </div>
-
         <div class="field">
           <label>Note</label>
           <input v-model="form.note" maxlength="500" placeholder="optional" />
@@ -361,7 +247,7 @@ onMounted(async () => {
         </p>
 
         <div class="actions">
-          <button type="submit" class="btn-primary">
+          <button type="submit" class="btn-primary" :disabled="!form.instrumentId">
             {{ editingId ? 'Save Changes' : 'Record Trade' }}
           </button>
           <button v-if="editingId" type="button" class="btn-secondary" @click="resetForm">
@@ -433,82 +319,9 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.link-button {
-  width: auto;
-  background: none;
-  border: none;
-  padding: 0 0 0 8px;
-  color: #0d9488;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  text-decoration: underline;
-}
-.lookup-panel {
-  margin: 12px 0;
-  padding: 12px 14px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-}
-.lookup {
-  display: flex;
-  gap: 8px;
-}
-.lookup input {
-  flex: 1;
-}
-.lookup button {
-  width: auto;
-  white-space: nowrap;
-}
-.lookup-hint {
-  font-size: 13px;
-  margin: 0 0 10px;
-}
-.candidates {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
-}
-.candidates li {
-  display: grid;
-  grid-template-columns: minmax(140px, auto) 1fr auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 0;
-  border-top: 1px solid #e2e8f0;
-}
-.candidates button {
-  width: auto;
-}
-.candidate-id {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.candidate-name {
-  font-size: 14px;
-}
-.candidate-meta {
-  font-size: 12px;
-  white-space: nowrap;
-}
-.ticker {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: #475569;
-  background: #e2e8f0;
-  border-radius: 4px;
-  padding: 1px 6px;
-}
-.empty-hint {
-  margin-bottom: 12px;
-}
-@media (max-width: 640px) {
-  .candidates li {
-    grid-template-columns: 1fr auto;
-  }
+.instrument-field {
+  /* The picker's dropdown must escape the form grid rather than be clipped. */
+  grid-column: 1 / -1;
 }
 .grid {
   display: grid;

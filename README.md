@@ -55,13 +55,13 @@ An instrument with no quote reports an *unknown* market value, not zero — the 
 
 ## Adding instruments
 
-In the trade form on the **Ledger** page, click *can't find it?* and search by stock number or company name — `2330`, `6488`, `TSLA`, `taiwan semiconductor` — and add a result in one click. The symbol, market, currency, name **and current price** all come from the price provider; there is nothing to type and nothing to mistype.
+There is no "add an instrument" step. The instrument field on the **Ledger** page is a search box: type a stock number or company name — `2330`, `6488`, `TSLA`, `nvidia` — and pick a result. Anything you have traded before appears instantly; anything else comes from the price provider and is added as you pick it, with its symbol, market, currency, name **and current price** all fetched for you.
 
 **An instrument that cannot be priced cannot be added at all.** The quote is fetched as part of creating it, and a symbol the provider does not know is refused outright rather than sitting in the list looking normal until a quote fails to arrive weeks later. It also means a new instrument is priced immediately, so holdings can be valued as soon as a trade is recorded.
 
 Only TWSE, TPEX, NYSE and NASDAQ listings can be priced, so other exchanges, indices and futures are filtered out of results. The provider matches symbols and English names but **not Chinese** — search `2330`, not `台積電`. Adding is open to any signed-in user — otherwise you could not record a trade in a stock nobody had entered yet. Renaming and deleting an instrument stay with admins and have no UI; they are API-only.
 
-There is no separate instruments page: an instrument exists only to be traded, so adding one lives in the trade form, and refreshing quotes lives on the Holdings page where the numbers it feeds are shown.
+Refreshing quotes lives on the Holdings page, where the numbers it feeds are shown.
 
 ## Quotes
 
