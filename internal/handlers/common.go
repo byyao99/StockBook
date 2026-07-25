@@ -96,6 +96,13 @@ func respondDBError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": "this instrument has transactions and cannot be deleted"})
 		return
 	}
+	if errors.Is(err, db.ErrCurrencyLocked) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "this instrument already has trades, so its currency cannot be changed; " +
+				"every price recorded against it is denominated in the current one",
+		})
+		return
+	}
 	if errors.Is(err, db.ErrConflict) {
 		c.JSON(http.StatusConflict, gin.H{"error": "the position was changed by someone else; reload and try again"})
 		return

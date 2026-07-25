@@ -6,8 +6,9 @@ import type {
   AuthUser,
   Instrument,
   InstrumentInput,
-  PortfolioSummary,
+  CurrencySummary,
   Position,
+  RefreshReport,
   Role,
   Transaction,
   TransactionEdit,
@@ -140,6 +141,11 @@ export const instrumentApi = {
       body: JSON.stringify({ last_price: lastPrice }),
     }),
   remove: (id: string) => request<void>(`/instruments/${id}`, { method: 'DELETE' }),
+  // Fetches quotes for every instrument the provider can address. A partial
+  // failure is reported per symbol rather than failing the whole call, so the
+  // caller sees exactly which tickers are wrong and what the provider said.
+  refreshQuotes: () =>
+    request<RefreshReport>('/instruments/refresh-quotes', { method: 'POST' }),
 }
 
 export interface TransactionFilter {
@@ -171,5 +177,5 @@ export const positionApi = {
     requestPage<Position>(
       `/positions${pageQuery(limit, offset)}${includeClosed ? '&include_closed=true' : ''}`,
     ),
-  summary: () => request<PortfolioSummary>('/positions/summary'),
+  summary: () => request<CurrencySummary[]>('/positions/summary'),
 }

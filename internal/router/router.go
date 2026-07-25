@@ -16,14 +16,16 @@ import (
 )
 
 // New builds and configures the Gin router. am signs and verifies bearer
-// tokens; log receives one structured record per request.
-func New(s *db.DB, am *auth.Manager, log *slog.Logger) *gin.Engine {
+// tokens; log receives one structured record per request; fetcher supplies
+// market quotes and may be nil, in which case the refresh endpoint reports that
+// quote fetching is not configured.
+func New(s *db.DB, am *auth.Manager, log *slog.Logger, fetcher handlers.QuoteFetcher) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RequestID(), middleware.Logger(log), gin.Recovery(), cors())
 
 	authH := handlers.NewAuthHandler(s, am)
 	user := handlers.NewUserHandler(s)
-	instrument := handlers.NewInstrumentHandler(s)
+	instrument := handlers.NewInstrumentHandler(s, fetcher)
 	transaction := handlers.NewTransactionHandler(s)
 	position := handlers.NewPositionHandler(s)
 
@@ -68,6 +70,10 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger) *gin.Engine {
 			i.POST("", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Create)
 			i.PUT("/:id", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Update)
 			i.PATCH("/:id/price", middleware.RequireRole(am, s, models.RoleAdmin), instrument.SetPrice)
+			// Fetching quotes reaches an external provider, so it is an explicit
+			// admin action rather than a background job: a caller who triggers it
+			// gets the per-symbol failures back instead of them landing in a log.
+			i.POST("/refresh-quotes", middleware.RequireRole(am, s, models.RoleAdmin), instrument.RefreshQuotes)
 			i.DELETE("/:id", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Delete)
 		}
 

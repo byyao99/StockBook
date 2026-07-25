@@ -16,6 +16,7 @@ import (
 
 	"stockbook/internal/auth"
 	"stockbook/internal/db"
+	"stockbook/internal/handlers"
 	"stockbook/internal/models"
 	"stockbook/internal/router"
 )
@@ -27,7 +28,14 @@ type testEnv struct {
 	am *auth.Manager
 }
 
+// setup wires a router with no quote provider, which is what most tests want.
 func setup(t *testing.T) *testEnv {
+	return setupWithFetcher(t, nil)
+}
+
+// setupWithFetcher wires a router whose instrument handler uses the given quote
+// provider. Tests pass a stub so the suite never reaches the network.
+func setupWithFetcher(t *testing.T, fetcher handlers.QuoteFetcher) *testEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	s, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -37,7 +45,7 @@ func setup(t *testing.T) *testEnv {
 	t.Cleanup(func() { s.Close() })
 	am := auth.NewManager([]byte("test-secret"), time.Hour)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &testEnv{r: router.New(s, am, log), s: s, am: am}
+	return &testEnv{r: router.New(s, am, log, fetcher), s: s, am: am}
 }
 
 // token creates a user with the given role and returns a bearer token for it.
@@ -67,7 +75,7 @@ func (e *testEnv) seedInstrument(t *testing.T, symbol string, lastPrice *int64) 
 		t.Fatalf("CreateInstrument: %v", err)
 	}
 	if lastPrice != nil {
-		item, err = e.s.UpdateInstrumentPrice(item.ID, lastPrice)
+		item, err = e.s.UpdateInstrumentPrice(item.ID, lastPrice, nil)
 		if err != nil {
 			t.Fatalf("UpdateInstrumentPrice: %v", err)
 		}
@@ -422,8 +430,12 @@ func TestUnpricedPositionReportsNullValuation(t *testing.T) {
 	// The summary must say how much of the book its totals cover rather than
 	// folding the unpriced holding in as zero.
 	rec = e.do(t, http.MethodGet, "/api/v1/positions/summary", nil, user)
-	var summary db.PortfolioSummary
-	decodeData(t, rec, &summary)
+	var summaries []db.CurrencySummary
+	decodeData(t, rec, &summaries)
+	if len(summaries) != 1 {
+		t.Fatalf("got %d currency summaries, want 1", len(summaries))
+	}
+	summary := summaries[0]
 	if summary.OpenPositions != 2 || summary.PricedPositions != 1 {
 		t.Errorf("open=%d priced=%d, want 2/1", summary.OpenPositions, summary.PricedPositions)
 	}
@@ -465,8 +477,12 @@ func TestClosedPositionsHideButStillCount(t *testing.T) {
 	}
 
 	rec = e.do(t, http.MethodGet, "/api/v1/positions/summary", nil, user)
-	var summary db.PortfolioSummary
-	decodeData(t, rec, &summary)
+	var summaries []db.CurrencySummary
+	decodeData(t, rec, &summaries)
+	if len(summaries) != 1 {
+		t.Fatalf("got %d currency summaries, want 1", len(summaries))
+	}
+	summary := summaries[0]
 	if summary.OpenPositions != 0 {
 		t.Errorf("open_positions = %d, want 0", summary.OpenPositions)
 	}

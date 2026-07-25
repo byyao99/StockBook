@@ -4,7 +4,7 @@ import { instrumentApi, transactionApi } from '../api/client'
 import { formatCents, formatQty, fromCents, toCents } from '../money'
 import PaginationBar from '../components/PaginationBar.vue'
 import { SIDES } from '../types'
-import type { Instrument, Transaction, TransactionSide } from '../types'
+import type { Currency, Instrument, Transaction, TransactionSide } from '../types'
 
 const PAGE_SIZE = 20
 
@@ -52,6 +52,18 @@ const netPreview = computed(() => {
   const fee = toCents(form.feeDollars)
   return form.side === 'sell' ? gross - fee : gross + fee
 })
+
+// The currency of whichever instrument the form is pointed at, so amounts are
+// labelled correctly rather than all wearing a bare "$".
+const formCurrency = computed<Currency | undefined>(
+  () => instruments.value.find((i) => i.id === form.instrumentId)?.currency,
+)
+
+// Ledger rows carry only an instrument id, so the currency is looked up from
+// the loaded master data; an instrument since deleted simply shows unlabelled.
+function currencyOf(instrumentId: string): Currency | undefined {
+  return instruments.value.find((i) => i.id === instrumentId)?.currency
+}
 
 async function load() {
   loading.value = true
@@ -199,7 +211,7 @@ onMounted(async () => {
                  as a delete plus a fresh entry. -->
             <select v-model="form.instrumentId" required :disabled="editingId !== null">
               <option v-for="i in instruments" :key="i.id" :value="i.id">
-                {{ i.symbol }} — {{ i.name }}
+                {{ i.symbol }} — {{ i.name }} ({{ i.currency }})
               </option>
             </select>
           </div>
@@ -214,11 +226,11 @@ onMounted(async () => {
             <input v-model.number="form.quantity" type="number" min="1" step="1" required />
           </div>
           <div class="field">
-            <label>Price ($)</label>
+            <label>Price ({{ formCurrency ?? '—' }})</label>
             <input v-model.number="form.priceDollars" type="number" min="0" step="0.01" required />
           </div>
           <div class="field">
-            <label>Fees &amp; tax ($)</label>
+            <label>Fees &amp; tax ({{ formCurrency ?? '—' }})</label>
             <input v-model.number="form.feeDollars" type="number" min="0" step="0.01" />
           </div>
           <div class="field">
@@ -233,7 +245,7 @@ onMounted(async () => {
 
         <p class="preview muted">
           {{ form.side === 'sell' ? 'Proceeds' : 'Total cost' }}:
-          <strong>{{ formatCents(netPreview) }}</strong>
+          <strong>{{ formatCents(netPreview, formCurrency) }}</strong>
           <span class="hint">(the server recomputes this; this is a preview)</span>
         </p>
 
@@ -292,9 +304,9 @@ onMounted(async () => {
                 </span>
               </td>
               <td class="num">{{ formatQty(t.quantity) }}</td>
-              <td class="num">{{ formatCents(t.price) }}</td>
-              <td class="num">{{ formatCents(t.fee) }}</td>
-              <td class="num">{{ formatCents(t.net_amount) }}</td>
+              <td class="num">{{ formatCents(t.price, currencyOf(t.instrument_id)) }}</td>
+              <td class="num">{{ formatCents(t.fee, currencyOf(t.instrument_id)) }}</td>
+              <td class="num">{{ formatCents(t.net_amount, currencyOf(t.instrument_id)) }}</td>
               <td class="row-actions">
                 <button class="btn-secondary" @click="startEdit(t)">Edit</button>
                 <button class="btn-danger" @click="remove(t)">Delete</button>

@@ -30,6 +30,12 @@ var ErrSymbolTaken = errors.New("symbol already taken")
 // they carry is not enough to rebuild a position from.
 var ErrInstrumentInUse = errors.New("instrument is referenced by existing transactions")
 
+// ErrCurrencyLocked is returned when changing the currency of an instrument that
+// already has trades against it. Every price and cost basis recorded under it
+// was denominated in the old currency, so switching would reinterpret the whole
+// history rather than correct it.
+var ErrCurrencyLocked = errors.New("currency cannot be changed once trades exist")
+
 // ListOptions controls pagination and sorting for list queries.
 // Sort is a column name; it is validated against a per-resource allowlist
 // before reaching SQL, so it is never a SQL-injection vector. Order is
@@ -113,7 +119,32 @@ func Open(dsn string) (*DB, error) {
 	// on an engine that does allow concurrent writers, and the concurrency tests
 	// exercise it as if we were on one.
 	sqlDB.SetMaxOpenConns(1)
-	return &DB{db: db}, nil
+
+	d := &DB{db: db}
+	if err := d.backfillCurrencies(); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// backfillCurrencies gives a currency to instruments created before the column
+// existed. AutoMigrate adds a column but leaves existing rows at the zero value,
+// and an empty currency would silently drop those holdings out of every
+// per-currency total. The market each instrument trades on is the best available
+// guess, and an admin can correct it afterwards.
+func (d *DB) backfillCurrencies() error {
+	var stale []models.Instrument
+	if err := d.db.Where("currency IS NULL OR currency = ''").Find(&stale).Error; err != nil {
+		return err
+	}
+	for _, item := range stale {
+		currency := models.DefaultCurrencyForMarket(item.Market)
+		if err := d.db.Model(&models.Instrument{}).
+			Where("id = ?", item.ID).Update("currency", currency).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close releases the underlying database connection.

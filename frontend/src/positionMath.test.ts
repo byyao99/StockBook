@@ -8,7 +8,7 @@ import {
   unpricedCount,
   unrealizedPL,
 } from './positionMath'
-import type { PortfolioSummary, Position } from './types'
+import type { CurrencySummary, Position } from './types'
 
 // position builds a holding with sensible defaults for the fields under test.
 function position(overrides: Partial<Position> = {}): Position {
@@ -18,6 +18,7 @@ function position(overrides: Partial<Position> = {}): Position {
     symbol: '2330',
     name: 'TSMC',
     market: 'TWSE',
+    currency: 'TWD',
     quantity: 100,
     cost_basis: 900_000, // 100 shares averaging $90.00
     realized_pl: 0,
@@ -102,8 +103,9 @@ describe('isUnpriced', () => {
   })
 })
 
-function summary(overrides: Partial<PortfolioSummary> = {}): PortfolioSummary {
+function summary(overrides: Partial<CurrencySummary> = {}): CurrencySummary {
   return {
+    currency: 'TWD',
     open_positions: 3,
     priced_positions: 2,
     total_cost_basis: 300_000,

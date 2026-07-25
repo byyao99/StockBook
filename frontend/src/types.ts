@@ -9,6 +9,11 @@
 export type Role = 'user' | 'admin'
 export const ROLES: Role[] = ['user', 'admin']
 
+// Quote currencies. Amounts in different currencies are never added together or
+// converted — there is no FX rate in this system — so every total is per currency.
+export type Currency = 'TWD' | 'USD'
+export const CURRENCIES: Currency[] = ['TWD', 'USD']
+
 // Canonical market codes; mirrors models.Markets on the backend.
 export const MARKETS = ['TWSE', 'TPEX', 'NYSE', 'NASDAQ', 'OTHER'] as const
 
@@ -31,6 +36,9 @@ export interface Instrument {
   symbol: string
   name: string
   market: string
+  // Fixed once trades exist against the instrument: changing it would
+  // reinterpret every cost basis already recorded under it.
+  currency: Currency
   // The quote, maintained by hand. null means no quote has been set, which the
   // UI must show as unknown rather than as zero.
   last_price: number | null
@@ -43,6 +51,8 @@ export interface InstrumentInput {
   symbol: string
   name: string
   market: string
+  // Optional; the server defaults it from the market when omitted.
+  currency?: Currency
 }
 
 export type TransactionSide = 'buy' | 'sell'
@@ -103,6 +113,7 @@ export interface Position {
   symbol: string
   name: string
   market: string
+  currency: Currency
   quantity: number
   cost_basis: number
   realized_pl: number
@@ -113,14 +124,17 @@ export interface Position {
   updated_at: string
 }
 
-// PortfolioSummary totals the whole book.
+// CurrencySummary totals the part of the book held in one currency. The API
+// returns one per currency the user holds — never a single grand total, which
+// would mean adding TWD to USD.
 //
 // `total_market_value` and `total_unrealized_pl` cover only the holdings that
 // have a quote, so `priced_cost_basis` is reported alongside them and the
 // identity total_unrealized_pl === total_market_value - priced_cost_basis
 // always holds. Compare `priced_positions` with `open_positions` to tell the
 // user how much of the book those totals actually account for.
-export interface PortfolioSummary {
+export interface CurrencySummary {
+  currency: Currency
   open_positions: number
   priced_positions: number
   total_cost_basis: number
@@ -128,4 +142,21 @@ export interface PortfolioSummary {
   total_market_value: number
   total_unrealized_pl: number
   total_realized_pl: number
+}
+
+// The outcome of one instrument in a quote refresh. `error` carries the
+// provider's own wording, which is the only actionable diagnostic for a symbol
+// that cannot be fetched.
+export interface RefreshResult {
+  instrument_id: string
+  symbol: string
+  status: 'updated' | 'skipped' | 'failed'
+  last_price?: number
+  error?: string
+}
+
+export interface RefreshReport {
+  updated: number
+  failed: number
+  results: RefreshResult[]
 }

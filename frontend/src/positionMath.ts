@@ -4,7 +4,7 @@
 // the frontend's contract test surface: every one of them must return null,
 // never zero, when the holding cannot be valued. An unknown market value shown
 // as $0.00 would read as a total loss.
-import type { Position, PortfolioSummary } from './types'
+import type { CurrencySummary, Position } from './types'
 
 /**
  * Average cost per share, in cents, or null for a closed holding.
@@ -53,7 +53,7 @@ export function isUnpriced(p: Position): boolean {
  * result means `total_market_value` covers only part of the book and the UI
  * should say so rather than presenting it as the whole.
  */
-export function unpricedCount(s: PortfolioSummary): number {
+export function unpricedCount(s: CurrencySummary): number {
   return s.open_positions - s.priced_positions
 }
 
@@ -61,7 +61,7 @@ export function unpricedCount(s: PortfolioSummary): number {
  * Total return on the priced part of the book as a fraction, or null when there
  * is no priced cost to measure against.
  */
-export function summaryReturnPct(s: PortfolioSummary): number | null {
+export function summaryReturnPct(s: CurrencySummary): number | null {
   if (s.priced_cost_basis === 0) return null
   return s.total_unrealized_pl / s.priced_cost_basis
 }

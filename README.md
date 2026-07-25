@@ -2,7 +2,7 @@
 
 A personal portfolio ledger. Record the trades you actually made; StockBook derives your holdings, moving-average cost, and realized/unrealized profit and loss.
 
-It is a book of record, not a trading system — there is no cash balance, no order matching, and no broker connection. Quotes are entered by hand.
+It is a book of record, not a trading system — there is no cash balance, no order matching, and no broker connection. Quotes are fetched from Yahoo Finance on demand, or entered by hand.
 
 - **Backend** — Go + Gin + GORM + SQLite (pure Go, no cgo)
 - **Frontend** — Vue 3 + TypeScript + Vite, no state library and no UI framework
@@ -45,9 +45,19 @@ Two ideas carry most of the design:
 
 A consequence worth knowing: **deleting a trade can be refused**. Removing a buy that a later sell drew on would punch a hole in history, so the replay catches it and the whole operation rolls back with a 409 naming the entry that would have been left short.
 
-**Cost is stored as a total, never as an average.** Three shares at $10.00 plus one at $10.01 average 1000.25 cents — not an integer. Storing the total keeps it exact; the average is derived only for display. Every monetary value in the system is `int64` cents, converted to dollars at the UI edge and nowhere else.
+**Cost is stored as a total, never as an average.** Three shares at $10.00 plus one at $10.01 average 1000.25 cents — not an integer. Storing the total keeps it exact; the average is derived only for display. Every monetary value in the system is `int64` hundredths, converted at the UI edge and nowhere else.
 
 An instrument with no quote reports an *unknown* market value, not zero — the portfolio summary tells you how many holdings its totals leave out rather than quietly presenting a partial figure as the whole.
+
+**Currencies are tracked, never converted.** An instrument is denominated in TWD or USD, and the portfolio summary comes back as one total per currency rather than a single figure — there is no exchange rate in this system, and inventing one would be worse than showing two numbers. A currency is locked once trades exist against the instrument.
+
+## Quotes
+
+Press **Refresh quotes** on the Instruments page (admin only) to pull current prices from Yahoo Finance. Taiwan listings are looked up as `2330.TW` / `6488.TWO` and US listings by their bare symbol.
+
+Yahoo has no official public API; this uses the undocumented endpoint behind their charts, which needs no key but is unsupported and may break. Everything provider-specific lives in `internal/quotes`, so swapping in another source is a one-file change.
+
+A refresh reports each symbol separately — one delisted ticker does not stop the rest — and a failure carries the provider's own explanation. **A failed fetch changes nothing**: the instrument keeps its previous price and its previous timestamp, so a stale quote keeps looking stale instead of being silently restamped. To run it on a schedule, point cron at `POST /api/v1/instruments/refresh-quotes`.
 
 See `CLAUDE.md` for the full architecture and the invariants to preserve when changing it.
 
@@ -63,6 +73,7 @@ All routes are under `/api/v1`. Single resources return `{"data": ...}`, lists a
 | `GET` | `/instruments`, `/instruments/:id` | authenticated |
 | `POST` `PUT` `DELETE` | `/instruments`, `/instruments/:id` | admin |
 | `PATCH` | `/instruments/:id/price` | admin |
+| `POST` | `/instruments/refresh-quotes` | admin |
 | `GET` `POST` | `/transactions` | authenticated, own book only |
 | `GET` `PUT` `DELETE` | `/transactions/:id` | authenticated, own book only |
 | `GET` | `/positions`, `/positions/summary` | authenticated, own book only |

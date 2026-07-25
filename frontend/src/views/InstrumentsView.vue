@@ -4,8 +4,8 @@ import { instrumentApi } from '../api/client'
 import { formatCentsOrUnknown, fromCents, toCents } from '../money'
 import { isAdmin } from '../session'
 import PaginationBar from '../components/PaginationBar.vue'
-import { MARKETS } from '../types'
-import type { Instrument } from '../types'
+import { CURRENCIES, MARKETS } from '../types'
+import type { Currency, Instrument, RefreshResult } from '../types'
 
 const PAGE_SIZE = 20
 
@@ -20,11 +20,23 @@ const searchQuery = ref('')
 const marketFilter = ref('')
 
 const editingId = ref<string | null>(null)
-const form = reactive<{ symbol: string; name: string; market: string }>({
+const form = reactive<{ symbol: string; name: string; market: string; currency: Currency }>({
   symbol: '',
   name: '',
   market: 'TWSE',
+  currency: 'TWD',
 })
+
+// The outcome of the last quote refresh, kept so the per-symbol failures stay
+// on screen — a count alone would not say which ticker is wrong or why.
+const refreshResults = ref<RefreshResult[]>([])
+const refreshing = ref(false)
+
+// Picking a market pre-selects the currency it normally trades in, mirroring
+// the server's own default. Still overridable for the odd ADR.
+function marketChanged() {
+  form.currency = form.market === 'NYSE' || form.market === 'NASDAQ' ? 'USD' : 'TWD'
+}
 
 // Quotes are edited inline per row rather than through the main form: setting a
 // price is a separate endpoint and a different kind of task from editing the
@@ -68,18 +80,28 @@ function applyFilter() {
 
 function resetForm() {
   editingId.value = null
-  Object.assign(form, { symbol: '', name: '', market: 'TWSE' })
+  Object.assign(form, { symbol: '', name: '', market: 'TWSE', currency: 'TWD' })
 }
 
 function startEdit(item: Instrument) {
   editingId.value = item.id
-  Object.assign(form, { symbol: item.symbol, name: item.name, market: item.market })
+  Object.assign(form, {
+    symbol: item.symbol,
+    name: item.name,
+    market: item.market,
+    currency: item.currency,
+  })
 }
 
 async function submit() {
   error.value = ''
   success.value = ''
-  const input = { symbol: form.symbol, name: form.name, market: form.market }
+  const input = {
+    symbol: form.symbol,
+    name: form.name,
+    market: form.market,
+    currency: form.currency,
+  }
   try {
     if (editingId.value) {
       await instrumentApi.update(editingId.value, input)
@@ -111,6 +133,30 @@ async function savePrice(item: Instrument) {
     await load()
   } catch (e) {
     error.value = (e as Error).message
+  }
+}
+
+// Fetches quotes for every instrument the provider can address. A partial
+// failure is normal — one delisted ticker must not stop the rest — so the
+// results are shown per symbol rather than collapsed into a single verdict.
+async function refreshQuotes() {
+  refreshing.value = true
+  error.value = ''
+  success.value = ''
+  refreshResults.value = []
+  try {
+    const report = await instrumentApi.refreshQuotes()
+    refreshResults.value = report.results.filter((r) => r.status !== 'updated')
+    success.value = `Updated ${report.updated} ${report.updated === 1 ? 'quote' : 'quotes'}.`
+    if (report.failed > 0) {
+      success.value += ` ${report.failed} could not be fetched — see below.`
+    }
+    await load()
+  } catch (e) {
+    // A whole-call failure (not configured, no network, not an admin).
+    error.value = (e as Error).message
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -160,8 +206,17 @@ onMounted(load)
           </div>
           <div class="field">
             <label>Market</label>
-            <select v-model="form.market" required>
+            <select v-model="form.market" required @change="marketChanged">
               <option v-for="m in MARKETS" :key="m" :value="m">{{ m }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Currency</label>
+            <!-- Locked once trades exist: changing it would reinterpret every
+                 cost basis already recorded against this instrument, and the
+                 server refuses the change anyway. -->
+            <select v-model="form.currency" required>
+              <option v-for="c in CURRENCIES" :key="c" :value="c">{{ c }}</option>
             </select>
           </div>
         </div>
@@ -180,6 +235,9 @@ onMounted(load)
       <div class="head">
         <h2 class="section-title">Instruments ({{ total }})</h2>
         <div class="filter">
+          <button v-if="isAdmin" class="btn-primary" :disabled="refreshing" @click="refreshQuotes">
+            {{ refreshing ? 'Fetching…' : 'Refresh quotes' }}
+          </button>
           <input
             v-model="searchQuery"
             type="search"
@@ -194,6 +252,16 @@ onMounted(load)
         </div>
       </div>
 
+      <ul v-if="refreshResults.length > 0" class="refresh-log">
+        <li v-for="r in refreshResults" :key="r.instrument_id">
+          <span :class="['badge', r.status === 'failed' ? 'badge-sell' : 'badge-warn']">
+            {{ r.status }}
+          </span>
+          <strong>{{ r.symbol }}</strong>
+          <span class="muted">{{ r.error }}</span>
+        </li>
+      </ul>
+
       <p v-if="loading" class="muted">Loading…</p>
       <p v-else-if="items.length === 0" class="muted">No instruments found.</p>
       <div v-else class="table-wrap">
@@ -202,6 +270,7 @@ onMounted(load)
             <tr>
               <th>Symbol</th>
               <th>Market</th>
+              <th>Ccy</th>
               <th class="num">Last price</th>
               <th>Quote set</th>
               <th v-if="isAdmin"></th>
@@ -214,6 +283,7 @@ onMounted(load)
                 <div class="muted">{{ item.name }}</div>
               </td>
               <td>{{ item.market }}</td>
+              <td class="muted">{{ item.currency }}</td>
               <td class="num">
                 <template v-if="isAdmin">
                   <input
@@ -226,7 +296,9 @@ onMounted(load)
                     @keyup.enter="savePrice(item)"
                   />
                 </template>
-                <template v-else>{{ formatCentsOrUnknown(item.last_price) }}</template>
+                <template v-else>{{
+                  formatCentsOrUnknown(item.last_price, item.currency)
+                }}</template>
               </td>
               <td>
                 <span :class="item.price_updated_at ? 'muted' : 'badge badge-warn'">
@@ -289,6 +361,21 @@ onMounted(load)
 .hint {
   font-size: 12px;
   margin-top: 12px;
+}
+.refresh-log {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.refresh-log li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
 }
 .table-wrap {
   overflow-x: auto;

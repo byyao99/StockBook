@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { positionApi } from '../api/client'
 import {
   formatCents,
@@ -17,22 +17,20 @@ import {
   unpricedCount,
 } from '../positionMath'
 import PaginationBar from '../components/PaginationBar.vue'
-import type { PortfolioSummary, Position } from '../types'
+import type { CurrencySummary, Position } from '../types'
 
 const PAGE_SIZE = 20
 
 const positions = ref<Position[]>([])
-const summary = ref<PortfolioSummary | null>(null)
+// One summary per currency held. They are never combined into a grand total:
+// there is no FX rate in this system, so adding TWD to USD would produce a
+// number that means nothing.
+const summaries = ref<CurrencySummary[]>([])
 const total = ref(0)
 const offset = ref(0)
 const includeClosed = ref(false)
 const loading = ref(false)
 const error = ref('')
-
-// How many open holdings the valuation totals leave out. Anything above zero
-// means the market-value figures cover only part of the book, which the UI says
-// out loud rather than presenting a partial total as the whole.
-const missingQuotes = computed(() => (summary.value ? unpricedCount(summary.value) : 0))
 
 async function load() {
   loading.value = true
@@ -44,7 +42,7 @@ async function load() {
     ])
     positions.value = page.items
     total.value = page.pagination.total
-    summary.value = totals
+    summaries.value = totals
     // If a filter change emptied the current page, step back one.
     if (positions.value.length === 0 && offset.value > 0) {
       offset.value = Math.max(0, offset.value - PAGE_SIZE)
@@ -81,46 +79,51 @@ onMounted(load)
   <div>
     <p v-if="error" class="error">{{ error }}</p>
 
-    <section v-if="summary" class="cards">
-      <div class="stat">
-        <span class="stat-label">Cost basis</span>
-        <strong class="stat-value">{{ formatCents(summary.total_cost_basis) }}</strong>
-        <span class="muted stat-note">{{ summary.open_positions }} open</span>
+    <!-- One block per currency. Side by side rather than summed, because a
+         combined figure would require an exchange rate this system does not
+         have and would silently invent. -->
+    <section v-for="s in summaries" :key="s.currency" class="currency-block">
+      <h2 class="currency-title">
+        {{ s.currency }}
+        <span class="muted">· {{ s.open_positions }} open</span>
+      </h2>
+      <div class="cards">
+        <div class="stat">
+          <span class="stat-label">Cost basis</span>
+          <strong class="stat-value">{{ formatCents(s.total_cost_basis, s.currency) }}</strong>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Market value</span>
+          <strong class="stat-value">{{ formatCents(s.total_market_value, s.currency) }}</strong>
+          <span v-if="unpricedCount(s) > 0" class="badge badge-warn">
+            {{ unpricedCount(s) }} unpriced
+          </span>
+          <span v-else class="muted stat-note">all holdings priced</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Unrealized</span>
+          <strong class="stat-value" :class="plClass(s.total_unrealized_pl)">
+            {{ formatSignedCents(s.total_unrealized_pl, s.currency) }}
+          </strong>
+          <span class="muted stat-note">
+            {{ formatPercentOrUnknown(summaryReturnPct(s)) }} on priced cost
+          </span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Realized</span>
+          <strong class="stat-value" :class="plClass(s.total_realized_pl)">
+            {{ formatSignedCents(s.total_realized_pl, s.currency) }}
+          </strong>
+          <span class="muted stat-note">banked, all time</span>
+        </div>
       </div>
-      <div class="stat">
-        <span class="stat-label">Market value</span>
-        <strong class="stat-value">{{ formatCents(summary.total_market_value) }}</strong>
-        <span v-if="missingQuotes > 0" class="badge badge-warn">
-          {{ missingQuotes }} unpriced
-        </span>
-        <span v-else class="muted stat-note">all holdings priced</span>
-      </div>
-      <div class="stat">
-        <span class="stat-label">Unrealized</span>
-        <strong class="stat-value" :class="plClass(summary.total_unrealized_pl)">
-          {{ formatSignedCents(summary.total_unrealized_pl) }}
-        </strong>
-        <span class="muted stat-note">
-          {{ formatPercentOrUnknown(summaryReturnPct(summary)) }} on priced cost
-        </span>
-      </div>
-      <div class="stat">
-        <span class="stat-label">Realized</span>
-        <strong class="stat-value" :class="plClass(summary.total_realized_pl)">
-          {{ formatSignedCents(summary.total_realized_pl) }}
-        </strong>
-        <span class="muted stat-note">banked, all time</span>
-      </div>
+      <p v-if="unpricedCount(s) > 0" class="notice">
+        {{ unpricedCount(s) }} open {{ unpricedCount(s) === 1 ? 'holding has' : 'holdings have' }}
+        no quote, so the {{ s.currency }} market value and unrealized figures exclude
+        {{ unpricedCount(s) === 1 ? 'it' : 'them' }}. An admin can refresh or set
+        quotes on the Instruments page.
+      </p>
     </section>
-
-    <!-- The valuation totals cover only the priced holdings, so say what they
-         leave out instead of letting a partial number read as complete. -->
-    <p v-if="missingQuotes > 0" class="notice">
-      {{ missingQuotes }} open {{ missingQuotes === 1 ? 'holding has' : 'holdings have' }}
-      no quote, so the market value and unrealized figures above exclude
-      {{ missingQuotes === 1 ? 'it' : 'them' }}. An admin can set quotes on the
-      Instruments page.
-    </p>
 
     <section class="card">
       <div class="head">
@@ -140,6 +143,7 @@ onMounted(load)
           <thead>
             <tr>
               <th>Symbol</th>
+              <th>Ccy</th>
               <th class="num">Shares</th>
               <th class="num">Avg cost</th>
               <th class="num">Cost basis</th>
@@ -156,22 +160,23 @@ onMounted(load)
                 <strong>{{ p.symbol }}</strong>
                 <div class="muted">{{ p.name }}</div>
               </td>
+              <td class="muted">{{ p.currency }}</td>
               <td class="num">{{ formatQty(p.quantity) }}</td>
-              <td class="num">{{ formatCentsOrUnknown(averageCost(p)) }}</td>
-              <td class="num">{{ formatCents(p.cost_basis) }}</td>
+              <td class="num">{{ formatCentsOrUnknown(averageCost(p), p.currency) }}</td>
+              <td class="num">{{ formatCents(p.cost_basis, p.currency) }}</td>
               <td class="num">
-                {{ formatCentsOrUnknown(p.last_price) }}
+                {{ formatCentsOrUnknown(p.last_price, p.currency) }}
                 <span v-if="isUnpriced(p)" class="badge badge-warn">no quote</span>
               </td>
-              <td class="num">{{ formatCentsOrUnknown(p.market_value) }}</td>
+              <td class="num">{{ formatCentsOrUnknown(p.market_value, p.currency) }}</td>
               <td class="num" :class="plClass(p.unrealized_pl)">
-                {{ formatSignedOrUnknown(p.unrealized_pl) }}
+                {{ formatSignedOrUnknown(p.unrealized_pl, p.currency) }}
               </td>
               <td class="num" :class="plClass(p.unrealized_pl)">
                 {{ formatPercentOrUnknown(returnPct(p)) }}
               </td>
               <td class="num" :class="plClass(p.realized_pl)">
-                {{ formatSignedCents(p.realized_pl) }}
+                {{ formatSignedCents(p.realized_pl, p.currency) }}
               </td>
             </tr>
           </tbody>
@@ -184,11 +189,26 @@ onMounted(load)
 </template>
 
 <style scoped>
+.currency-block {
+  margin-bottom: 20px;
+}
+.currency-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #334155;
+  margin: 0 0 8px;
+}
+.currency-title .muted {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
-  margin-bottom: 16px;
 }
 .stat {
   display: flex;
@@ -219,7 +239,7 @@ onMounted(load)
   color: #92400e;
   padding: 10px 14px;
   border-radius: 8px;
-  margin-bottom: 16px;
+  margin: 12px 0 0;
   font-size: 14px;
 }
 .head {

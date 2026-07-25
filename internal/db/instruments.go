@@ -82,20 +82,44 @@ func (d *DB) ListInstruments(opts ListOptions, filter InstrumentFilter) ([]model
 // UpdateInstrument overwrites an instrument's descriptive fields. The quote is
 // not touched here — see UpdateInstrumentPrice. It returns ErrNotFound if no
 // such instrument exists, or ErrSymbolTaken if the new symbol collides.
+//
+// Changing the currency once trades exist is refused with ErrCurrencyLocked:
+// every historical price and cost basis was recorded in the old currency, and
+// reinterpreting them wholesale would corrupt the book silently. The check and
+// the write share a transaction so a trade cannot be entered between them.
 func (d *DB) UpdateInstrument(id string, item models.Instrument) (models.Instrument, error) {
-	res := d.db.Model(&models.Instrument{}).Where("id = ?", id).Updates(map[string]any{
-		"symbol": item.Symbol,
-		"name":   item.Name,
-		"market": item.Market,
-	})
-	if res.Error != nil {
-		if errors.Is(res.Error, gorm.ErrDuplicatedKey) {
-			return models.Instrument{}, ErrSymbolTaken
+	err := d.db.Transaction(func(tx *gorm.DB) error {
+		var existing models.Instrument
+		if err := tx.First(&existing, "id = ?", id).Error; err != nil {
+			return translate(err)
 		}
-		return models.Instrument{}, res.Error
-	}
-	if res.RowsAffected == 0 {
-		return models.Instrument{}, ErrNotFound
+		if item.Currency != existing.Currency {
+			var traded int64
+			if err := tx.Model(&models.Transaction{}).
+				Where("instrument_id = ?", id).Count(&traded).Error; err != nil {
+				return err
+			}
+			if traded > 0 {
+				return ErrCurrencyLocked
+			}
+		}
+
+		res := tx.Model(&models.Instrument{}).Where("id = ?", id).Updates(map[string]any{
+			"symbol":   item.Symbol,
+			"name":     item.Name,
+			"market":   item.Market,
+			"currency": item.Currency,
+		})
+		if res.Error != nil {
+			if errors.Is(res.Error, gorm.ErrDuplicatedKey) {
+				return ErrSymbolTaken
+			}
+			return res.Error
+		}
+		return nil
+	})
+	if err != nil {
+		return models.Instrument{}, err
 	}
 	return d.GetInstrument(id)
 }
@@ -103,11 +127,19 @@ func (d *DB) UpdateInstrument(id string, item models.Instrument) (models.Instrum
 // UpdateInstrumentPrice sets (or clears, when price is nil) an instrument's
 // quote and stamps when it was set. Clearing the price also clears the stamp, so
 // a nil quote never carries a misleading "as of" time.
-func (d *DB) UpdateInstrumentPrice(id string, price *int64) (models.Instrument, error) {
+//
+// asOf records when the quote was actually good for. A fetched quote passes the
+// market timestamp the provider reported, so the staleness shown in the UI
+// reflects the price's own age rather than when we happened to ask for it; a
+// hand-entered quote passes nil and is stamped now.
+func (d *DB) UpdateInstrumentPrice(id string, price *int64, asOf *time.Time) (models.Instrument, error) {
 	updates := map[string]any{"last_price": price, "price_updated_at": nil}
 	if price != nil {
-		now := time.Now()
-		updates["price_updated_at"] = &now
+		stamp := time.Now()
+		if asOf != nil {
+			stamp = *asOf
+		}
+		updates["price_updated_at"] = &stamp
 	}
 	res := d.db.Model(&models.Instrument{}).Where("id = ?", id).Updates(updates)
 	if res.Error != nil {
@@ -117,6 +149,22 @@ func (d *DB) UpdateInstrumentPrice(id string, price *int64) (models.Instrument, 
 		return models.Instrument{}, ErrNotFound
 	}
 	return d.GetInstrument(id)
+}
+
+// SetInstrumentCurrency records a currency on an instrument that has none yet.
+// It is used to adopt the currency a quote provider reports during backfill, and
+// refuses to overwrite a currency that is already set.
+func (d *DB) SetInstrumentCurrency(id string, currency models.Currency) error {
+	res := d.db.Model(&models.Instrument{}).
+		Where("id = ? AND (currency IS NULL OR currency = '')", id).
+		Update("currency", currency)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrCurrencyLocked
+	}
+	return nil
 }
 
 // DeleteInstrument removes an instrument. It refuses with ErrInstrumentInUse

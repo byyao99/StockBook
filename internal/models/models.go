@@ -38,8 +38,49 @@ type User struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// Currency is the unit an instrument's prices are quoted in. Amounts in
+// different currencies are never added together or converted — there is no FX
+// rate in this system — so every total is reported per currency.
+type Currency string
+
+const (
+	CurrencyTWD Currency = "TWD"
+	CurrencyUSD Currency = "USD"
+)
+
+// Currencies are the supported quote currencies.
+var Currencies = []Currency{CurrencyTWD, CurrencyUSD}
+
+// Valid reports whether c is a supported currency.
+func (c Currency) Valid() bool {
+	return c == CurrencyTWD || c == CurrencyUSD
+}
+
+// CanonicalCurrency matches c against Currencies case-insensitively and returns
+// the canonical spelling. The second result reports whether a match was found.
+func CanonicalCurrency(c string) (Currency, bool) {
+	for _, known := range Currencies {
+		if equalFold(c, string(known)) {
+			return known, true
+		}
+	}
+	return "", false
+}
+
 // Markets are the canonical market codes an instrument may belong to.
 var Markets = []string{"TWSE", "TPEX", "NYSE", "NASDAQ", "OTHER"}
+
+// DefaultCurrencyForMarket returns the currency instruments on a market are
+// normally quoted in, used when a caller does not specify one. OTHER has no
+// obvious default and falls back to TWD; callers who care should be explicit.
+func DefaultCurrencyForMarket(market string) Currency {
+	switch market {
+	case "NYSE", "NASDAQ":
+		return CurrencyUSD
+	default:
+		return CurrencyTWD
+	}
+}
 
 // CanonicalMarket matches m against Markets case-insensitively and returns the
 // canonical spelling. The second result reports whether a match was found.
@@ -52,16 +93,21 @@ func CanonicalMarket(m string) (string, bool) {
 	return "", false
 }
 
-// Instrument is a tradable security in the master data. LastPrice is maintained
-// by hand (there is no market-data feed); nil means no quote has been set, which
-// is reported honestly as an unknown market value rather than as zero.
+// Instrument is a tradable security in the master data. LastPrice is either
+// entered by hand or fetched from a quote provider; nil means no quote has been
+// set, which is reported honestly as an unknown market value rather than as zero.
 //
-// LastPrice is int64 cents, like every other monetary field in this system.
+// LastPrice is int64 minor units (cents for USD, and the same hundredths scale
+// for TWD), like every other monetary field in this system.
+//
+// Currency is fixed once trades exist against the instrument: changing it would
+// silently reinterpret every historical cost basis recorded under it.
 type Instrument struct {
 	ID             string     `gorm:"primaryKey" json:"id"`
 	Symbol         string     `gorm:"uniqueIndex" json:"symbol"`
 	Name           string     `json:"name"`
 	Market         string     `json:"market"`
+	Currency       Currency   `gorm:"not null;default:TWD" json:"currency"`
 	LastPrice      *int64     `json:"last_price"`
 	PriceUpdatedAt *time.Time `json:"price_updated_at"`
 	CreatedAt      time.Time  `json:"created_at"`

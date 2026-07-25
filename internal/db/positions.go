@@ -1,6 +1,7 @@
 package db
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -17,19 +18,20 @@ import (
 // instrument has no quote — an unknown market value is reported as unknown
 // rather than quietly as zero.
 type PositionView struct {
-	ID             string     `json:"id"`
-	InstrumentID   string     `json:"instrument_id"`
-	Symbol         string     `json:"symbol"`
-	Name           string     `json:"name"`
-	Market         string     `json:"market"`
-	Quantity       int        `json:"quantity"`
-	CostBasis      int64      `json:"cost_basis"`
-	RealizedPL     int64      `json:"realized_pl"`
-	LastPrice      *int64     `json:"last_price"`
-	PriceUpdatedAt *time.Time `json:"price_updated_at"`
-	MarketValue    *int64     `json:"market_value"`
-	UnrealizedPL   *int64     `json:"unrealized_pl"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID             string          `json:"id"`
+	InstrumentID   string          `json:"instrument_id"`
+	Symbol         string          `json:"symbol"`
+	Name           string          `json:"name"`
+	Market         string          `json:"market"`
+	Currency       models.Currency `json:"currency"`
+	Quantity       int             `json:"quantity"`
+	CostBasis      int64           `json:"cost_basis"`
+	RealizedPL     int64           `json:"realized_pl"`
+	LastPrice      *int64          `json:"last_price"`
+	PriceUpdatedAt *time.Time      `json:"price_updated_at"`
+	MarketValue    *int64          `json:"market_value"`
+	UnrealizedPL   *int64          `json:"unrealized_pl"`
+	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
 // positionSortColumns maps the sort keys clients may use to qualified column
@@ -81,6 +83,7 @@ type positionRow struct {
 	Symbol         string
 	Name           string
 	Market         string
+	Currency       models.Currency
 	Quantity       int
 	CostBasis      int64
 	RealizedPL     int64
@@ -98,6 +101,7 @@ const positionSelect = `positions.id AS id,
 	instruments.symbol AS symbol,
 	instruments.name AS name,
 	instruments.market AS market,
+	instruments.currency AS currency,
 	instruments.last_price AS last_price,
 	instruments.price_updated_at AS price_updated_at`
 
@@ -137,6 +141,7 @@ func (r positionRow) toView() PositionView {
 		Symbol:         r.Symbol,
 		Name:           r.Name,
 		Market:         r.Market,
+		Currency:       r.Currency,
 		Quantity:       r.Quantity,
 		CostBasis:      r.CostBasis,
 		RealizedPL:     r.RealizedPL,
@@ -153,7 +158,12 @@ func (r positionRow) toView() PositionView {
 	return v
 }
 
-// PortfolioSummary totals a user's book.
+// CurrencySummary totals the part of a user's book denominated in one currency.
+//
+// There is no FX rate anywhere in this system, so amounts in different
+// currencies are never added together — a single grand total across TWD and USD
+// holdings would be a meaningless number. Callers get one of these per currency
+// and present them side by side.
 //
 // TotalMarketValue and TotalUnrealizedPL cover only the holdings that have a
 // quote, so PricedCostBasis is reported alongside them and the identity
@@ -164,25 +174,41 @@ func (r positionRow) toView() PositionView {
 //
 // TotalRealizedPL spans every holding including closed ones — profit already
 // banked does not stop counting because the shares are gone.
-type PortfolioSummary struct {
-	OpenPositions     int   `json:"open_positions"`
-	PricedPositions   int   `json:"priced_positions"`
-	TotalCostBasis    int64 `json:"total_cost_basis"`
-	PricedCostBasis   int64 `json:"priced_cost_basis"`
-	TotalMarketValue  int64 `json:"total_market_value"`
-	TotalUnrealizedPL int64 `json:"total_unrealized_pl"`
-	TotalRealizedPL   int64 `json:"total_realized_pl"`
+type CurrencySummary struct {
+	Currency          models.Currency `json:"currency"`
+	OpenPositions     int             `json:"open_positions"`
+	PricedPositions   int             `json:"priced_positions"`
+	TotalCostBasis    int64           `json:"total_cost_basis"`
+	PricedCostBasis   int64           `json:"priced_cost_basis"`
+	TotalMarketValue  int64           `json:"total_market_value"`
+	TotalUnrealizedPL int64           `json:"total_unrealized_pl"`
+	TotalRealizedPL   int64           `json:"total_realized_pl"`
 }
 
-// PortfolioSummary computes the totals across userID's whole book.
-func (d *DB) PortfolioSummary(userID string) (PortfolioSummary, error) {
+// PortfolioSummary computes userID's totals, one entry per currency they hold,
+// ordered by currency so the output is stable. A user with no holdings gets an
+// empty slice rather than a zeroed total for a currency they do not trade.
+func (d *DB) PortfolioSummary(userID string) ([]CurrencySummary, error) {
 	rows := []positionRow{}
 	if err := d.positionQuery(userID, true).Select(positionSelect).Scan(&rows).Error; err != nil {
-		return PortfolioSummary{}, err
+		return nil, err
 	}
 
-	var s PortfolioSummary
+	byCurrency := map[models.Currency]*CurrencySummary{}
 	for _, r := range rows {
+		currency := r.Currency
+		if currency == "" {
+			// Should not happen after the startup backfill, but bucketing an
+			// unknown currency separately is safer than silently folding it in
+			// with one that it might not match.
+			currency = "UNKNOWN"
+		}
+		s, ok := byCurrency[currency]
+		if !ok {
+			s = &CurrencySummary{Currency: currency}
+			byCurrency[currency] = s
+		}
+
 		s.TotalRealizedPL += r.RealizedPL
 		if r.Quantity == 0 {
 			continue
@@ -195,8 +221,16 @@ func (d *DB) PortfolioSummary(userID string) (PortfolioSummary, error) {
 			s.TotalMarketValue += int64(r.Quantity) * *r.LastPrice
 		}
 	}
-	s.TotalUnrealizedPL = s.TotalMarketValue - s.PricedCostBasis
-	return s, nil
+
+	summaries := make([]CurrencySummary, 0, len(byCurrency))
+	for _, s := range byCurrency {
+		s.TotalUnrealizedPL = s.TotalMarketValue - s.PricedCostBasis
+		summaries = append(summaries, *s)
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].Currency < summaries[j].Currency
+	})
+	return summaries, nil
 }
 
 // GetPosition returns one of userID's holdings by instrument, or ErrNotFound.

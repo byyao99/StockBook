@@ -14,6 +14,7 @@ import (
 	"stockbook/internal/auth"
 	"stockbook/internal/db"
 	"stockbook/internal/models"
+	"stockbook/internal/quotes"
 	"stockbook/internal/router"
 
 	"github.com/google/uuid"
@@ -42,7 +43,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + port(),
-		Handler: router.New(s, authManager, logger),
+		Handler: router.New(s, authManager, logger, quotes.NewClient()),
 	}
 
 	// Start the server in the background so main can wait for a shutdown signal.

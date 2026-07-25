@@ -1,24 +1,40 @@
 package handlers
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"stockbook/internal/db"
+	"stockbook/internal/middleware"
 	"stockbook/internal/models"
+	"stockbook/internal/quotes"
 )
+
+// QuoteFetcher is the slice of a quote provider this handler needs. Keeping it
+// an interface lets the tests drive the refresh endpoint without a network call,
+// and makes swapping providers a one-file change.
+type QuoteFetcher interface {
+	Fetch(ctx context.Context, ticker string) (quotes.Quote, error)
+}
 
 // InstrumentHandler handles the instrument master data.
 type InstrumentHandler struct {
-	db *db.DB
+	db     *db.DB
+	quotes QuoteFetcher
 }
 
-// NewInstrumentHandler creates an InstrumentHandler.
-func NewInstrumentHandler(s *db.DB) *InstrumentHandler {
-	return &InstrumentHandler{db: s}
+// NewInstrumentHandler creates an InstrumentHandler. quotes may be nil, in which
+// case the refresh endpoint reports that quote fetching is not configured.
+func NewInstrumentHandler(s *db.DB, q QuoteFetcher) *InstrumentHandler {
+	return &InstrumentHandler{db: s, quotes: q}
 }
 
 // instrumentRequest is the payload for creating or replacing an instrument. The
@@ -27,11 +43,15 @@ type instrumentRequest struct {
 	Symbol string `json:"symbol" binding:"required,max=20"`
 	Name   string `json:"name" binding:"required,max=120"`
 	Market string `json:"market" binding:"required"`
+	// Currency is optional; an omitted one defaults to whatever the market
+	// normally trades in, which is right for the overwhelming majority of cases
+	// and still overridable for the rest.
+	Currency string `json:"currency"`
 }
 
-// normalize trims the fields and folds the symbol and market to their canonical
-// spellings, so that "  2330 " and "twse" match an existing 2330/TWSE rather
-// than creating a near-duplicate.
+// normalize trims the fields and folds the symbol, market and currency to their
+// canonical spellings, so that "  2330 " and "twse" match an existing 2330/TWSE
+// rather than creating a near-duplicate.
 func (r *instrumentRequest) normalize() error {
 	r.Symbol = strings.ToUpper(strings.TrimSpace(r.Symbol))
 	r.Name = strings.TrimSpace(r.Name)
@@ -43,12 +63,23 @@ func (r *instrumentRequest) normalize() error {
 		return errUnknownMarket
 	}
 	r.Market = market
+
+	if strings.TrimSpace(r.Currency) == "" {
+		r.Currency = string(models.DefaultCurrencyForMarket(market))
+		return nil
+	}
+	currency, ok := models.CanonicalCurrency(strings.TrimSpace(r.Currency))
+	if !ok {
+		return errUnknownCurrency
+	}
+	r.Currency = string(currency)
 	return nil
 }
 
 var (
-	errEmptySymbol   = &validationError{"symbol must not be blank"}
-	errUnknownMarket = &validationError{"market must be one of: " + strings.Join(models.Markets, ", ")}
+	errEmptySymbol     = &validationError{"symbol must not be blank"}
+	errUnknownMarket   = &validationError{"market must be one of: " + strings.Join(models.Markets, ", ")}
+	errUnknownCurrency = &validationError{"currency must be TWD or USD"}
 )
 
 // validationError is a request-level problem that always maps to 400.
@@ -69,10 +100,11 @@ func (h *InstrumentHandler) Create(c *gin.Context) {
 	}
 
 	item, err := h.db.CreateInstrument(models.Instrument{
-		ID:     uuid.NewString(),
-		Symbol: req.Symbol,
-		Name:   req.Name,
-		Market: req.Market,
+		ID:       uuid.NewString(),
+		Symbol:   req.Symbol,
+		Name:     req.Name,
+		Market:   req.Market,
+		Currency: models.Currency(req.Currency),
 	})
 	if err != nil {
 		respondDBError(c, err)
@@ -131,9 +163,10 @@ func (h *InstrumentHandler) Update(c *gin.Context) {
 	}
 
 	item, err := h.db.UpdateInstrument(c.Param("id"), models.Instrument{
-		Symbol: req.Symbol,
-		Name:   req.Name,
-		Market: req.Market,
+		Symbol:   req.Symbol,
+		Name:     req.Name,
+		Market:   req.Market,
+		Currency: models.Currency(req.Currency),
 	})
 	if err != nil {
 		respondDBError(c, err)
@@ -164,7 +197,7 @@ func (h *InstrumentHandler) SetPrice(c *gin.Context) {
 		return
 	}
 
-	item, err := h.db.UpdateInstrumentPrice(c.Param("id"), req.LastPrice)
+	item, err := h.db.UpdateInstrumentPrice(c.Param("id"), req.LastPrice, nil)
 	if err != nil {
 		respondDBError(c, err)
 		return
@@ -180,4 +213,124 @@ func (h *InstrumentHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// refreshResult reports what happened to one instrument during a quote refresh.
+// Error carries the provider's own wording when there is any, because a
+// flattened "fetch failed" tells an operator nothing about which symbol is wrong
+// or why.
+type refreshResult struct {
+	InstrumentID string `json:"instrument_id"`
+	Symbol       string `json:"symbol"`
+	Status       string `json:"status"` // updated | skipped | failed
+	LastPrice    *int64 `json:"last_price,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// refreshTimeout bounds a whole refresh run, however many instruments it covers.
+const refreshTimeout = 60 * time.Second
+
+// RefreshQuotes handles POST /api/v1/instruments/refresh-quotes (admin only).
+// It fetches a current price for every instrument the provider can address and
+// reports the outcome per instrument.
+//
+// A partial failure is not an error for the run as a whole: one delisted ticker
+// must not stop the other twenty from updating. The response is 200 with each
+// instrument's own status, and the caller decides what to make of the failures.
+// An instrument that cannot be fetched keeps whatever quote it already had —
+// never a zero, and never a silently refreshed timestamp, so the staleness shown
+// in the UI stays truthful.
+func (h *InstrumentHandler) RefreshQuotes(c *gin.Context) {
+	if h.quotes == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quote fetching is not configured"})
+		return
+	}
+
+	// A large page: this walks the whole master data, which is small by nature.
+	items, _, err := h.db.ListInstruments(db.ListOptions{Limit: maxLimit}, db.InstrumentFilter{})
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), refreshTimeout)
+	defer cancel()
+
+	results := make([]refreshResult, 0, len(items))
+	updated, failed := 0, 0
+	for _, item := range items {
+		result := h.refreshOne(ctx, item)
+		switch result.Status {
+		case "updated":
+			updated++
+		case "failed":
+			failed++
+		}
+		results = append(results, result)
+	}
+
+	slog.Info("quotes refreshed",
+		slog.String(middleware.RequestIDKey, middleware.RequestIDFromContext(c)),
+		slog.String("actor_id", callerID(c)),
+		slog.Int("updated", updated),
+		slog.Int("failed", failed),
+		slog.Int("total", len(items)),
+	)
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"updated": updated,
+		"failed":  failed,
+		"results": results,
+	}})
+}
+
+// refreshOne fetches and stores a single instrument's quote, converting every
+// failure into a reportable result rather than aborting the run.
+func (h *InstrumentHandler) refreshOne(ctx context.Context, item models.Instrument) refreshResult {
+	result := refreshResult{InstrumentID: item.ID, Symbol: item.Symbol}
+
+	ticker, ok := quotes.Ticker(item.Symbol, item.Market)
+	if !ok {
+		result.Status = "skipped"
+		result.Error = "no quote source for market " + item.Market
+		return result
+	}
+
+	quote, err := h.quotes.Fetch(ctx, ticker)
+	if err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		return result
+	}
+
+	// A currency that disagrees with the instrument's own is a data problem, not
+	// a price to store: the cost basis already recorded against this instrument
+	// is denominated in the currency on file, so adopting the provider's would
+	// reinterpret history rather than correct it. Report it and change nothing.
+	if item.Currency != "" && quote.Currency != item.Currency {
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("provider quotes %s in %s but the instrument is recorded in %s",
+			item.Symbol, quote.Currency, item.Currency)
+		return result
+	}
+	if item.Currency == "" {
+		if err := h.db.SetInstrumentCurrency(item.ID, quote.Currency); err != nil &&
+			!errors.Is(err, db.ErrCurrencyLocked) {
+			result.Status = "failed"
+			result.Error = err.Error()
+			return result
+		}
+	}
+
+	price := quote.Price
+	asOf := quote.AsOf
+	if _, err := h.db.UpdateInstrumentPrice(item.ID, &price, &asOf); err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Status = "updated"
+	result.LastPrice = &price
+	return result
 }

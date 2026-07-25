@@ -1,8 +1,21 @@
-// Money helpers. The API speaks integer cents; the UI shows/edits dollars.
+// Money helpers. The API speaks integer minor units (hundredths); the UI shows
+// and edits whole units.
+//
+// Every formatter takes an optional currency. Amounts in different currencies
+// are never added or converted anywhere in this app, so the symbol is purely a
+// label — but an unlabelled one would be a lie the moment a book holds both.
+import type { Currency } from './types'
 
-/** Format integer cents as a currency string, e.g. 18000 -> "$180.00". */
-export function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
+const SYMBOLS: Record<Currency, string> = { TWD: 'NT$', USD: '$' }
+
+/** The prefix for a currency, defaulting to a bare "$" when none is given. */
+export function currencySymbol(currency?: Currency): string {
+  return currency ? SYMBOLS[currency] : '$'
+}
+
+/** Format integer minor units, e.g. (18000, 'USD') -> "$180.00". */
+export function formatCents(cents: number, currency?: Currency): string {
+  return `${currencySymbol(currency)}${(cents / 100).toFixed(2)}`
 }
 
 /** Convert a dollar amount entered by the user to integer cents. */
@@ -20,9 +33,9 @@ export function fromCents(cents: number): number {
  * -2500 -> "-$25.00". A gain and a loss must never look alike at a glance, and
  * the sign carries that even where color is unavailable.
  */
-export function formatSignedCents(cents: number): string {
+export function formatSignedCents(cents: number, currency?: Currency): string {
   const sign = cents < 0 ? '-' : '+'
-  return `${sign}${formatCents(Math.abs(cents))}`
+  return `${sign}${formatCents(Math.abs(cents), currency)}`
 }
 
 /** Format a fraction as a signed percentage, e.g. 0.1234 -> "+12.34%". */
@@ -44,13 +57,13 @@ export function formatQty(qty: number): string {
 export const UNKNOWN = '—'
 
 /** Format a possibly-null cent amount, falling back to the unknown marker. */
-export function formatCentsOrUnknown(cents: number | null): string {
-  return cents === null ? UNKNOWN : formatCents(cents)
+export function formatCentsOrUnknown(cents: number | null, currency?: Currency): string {
+  return cents === null ? UNKNOWN : formatCents(cents, currency)
 }
 
 /** Format a possibly-null profit or loss, falling back to the unknown marker. */
-export function formatSignedOrUnknown(cents: number | null): string {
-  return cents === null ? UNKNOWN : formatSignedCents(cents)
+export function formatSignedOrUnknown(cents: number | null, currency?: Currency): string {
+  return cents === null ? UNKNOWN : formatSignedCents(cents, currency)
 }
 
 /** Format a possibly-null fraction as a percentage, falling back to the marker. */
