@@ -30,15 +30,22 @@ var ErrUnsupportedMarket = errors.New("market is not supported by this quote pro
 
 const defaultBaseURL = "https://query1.finance.yahoo.com"
 
-// Quote is one fetched price.
+// Quote is one fetched price together with what the provider knows about the
+// instrument behind it.
 //
 // Price is in minor units (hundredths) to match the rest of the system, and
 // AsOf is the market timestamp the provider reported rather than the moment we
 // asked — so staleness shown to a user reflects the price's own age.
+//
+// Name and Exchange come along because a single fetch is then enough to
+// describe an instrument completely: the create path uses them so that the
+// name and currency on file are the provider's, not a caller's claim.
 type Quote struct {
 	Price    int64
 	Currency models.Currency
 	AsOf     time.Time
+	Name     string
+	Exchange string
 }
 
 // Client fetches quotes from Yahoo Finance.
@@ -110,6 +117,9 @@ type chartResponse struct {
 				Currency           string  `json:"currency"`
 				RegularMarketPrice float64 `json:"regularMarketPrice"`
 				RegularMarketTime  int64   `json:"regularMarketTime"`
+				ShortName          string  `json:"shortName"`
+				LongName           string  `json:"longName"`
+				ExchangeName       string  `json:"exchangeName"`
 			} `json:"meta"`
 		} `json:"result"`
 		Error *struct {
@@ -178,10 +188,16 @@ func (c *Client) Fetch(ctx context.Context, ticker string) (Quote, error) {
 		return Quote{}, fmt.Errorf("unsupported quote currency %q for %s", meta.Currency, ticker)
 	}
 
+	name := meta.LongName
+	if name == "" {
+		name = meta.ShortName
+	}
 	return Quote{
 		Price:    toMinorUnits(meta.RegularMarketPrice),
 		Currency: currency,
 		AsOf:     time.Unix(meta.RegularMarketTime, 0),
+		Name:     strings.TrimSpace(name),
+		Exchange: strings.ToUpper(meta.ExchangeName),
 	}, nil
 }
 

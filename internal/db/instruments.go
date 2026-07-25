@@ -79,47 +79,17 @@ func (d *DB) ListInstruments(opts ListOptions, filter InstrumentFilter) ([]model
 	return items, total, nil
 }
 
-// UpdateInstrument overwrites an instrument's descriptive fields. The quote is
-// not touched here — see UpdateInstrumentPrice. It returns ErrNotFound if no
-// such instrument exists, or ErrSymbolTaken if the new symbol collides.
-//
-// Changing the currency once trades exist is refused with ErrCurrencyLocked:
-// every historical price and cost basis was recorded in the old currency, and
-// reinterpreting them wholesale would corrupt the book silently. The check and
-// the write share a transaction so a trade cannot be entered between them.
-func (d *DB) UpdateInstrument(id string, item models.Instrument) (models.Instrument, error) {
-	err := d.db.Transaction(func(tx *gorm.DB) error {
-		var existing models.Instrument
-		if err := tx.First(&existing, "id = ?", id).Error; err != nil {
-			return translate(err)
-		}
-		if item.Currency != existing.Currency {
-			var traded int64
-			if err := tx.Model(&models.Transaction{}).
-				Where("instrument_id = ?", id).Count(&traded).Error; err != nil {
-				return err
-			}
-			if traded > 0 {
-				return ErrCurrencyLocked
-			}
-		}
-
-		res := tx.Model(&models.Instrument{}).Where("id = ?", id).Updates(map[string]any{
-			"symbol":   item.Symbol,
-			"name":     item.Name,
-			"market":   item.Market,
-			"currency": item.Currency,
-		})
-		if res.Error != nil {
-			if errors.Is(res.Error, gorm.ErrDuplicatedKey) {
-				return ErrSymbolTaken
-			}
-			return res.Error
-		}
-		return nil
-	})
-	if err != nil {
-		return models.Instrument{}, err
+// RenameInstrument changes an instrument's display name, the one part of it
+// this system owns rather than the provider. Symbol, market and currency are
+// fixed at creation: the first two determine how the instrument is priced and
+// the third is baked into every cost basis recorded against it.
+func (d *DB) RenameInstrument(id, name string) (models.Instrument, error) {
+	res := d.db.Model(&models.Instrument{}).Where("id = ?", id).Update("name", name)
+	if res.Error != nil {
+		return models.Instrument{}, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return models.Instrument{}, ErrNotFound
 	}
 	return d.GetInstrument(id)
 }

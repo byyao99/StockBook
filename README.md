@@ -53,11 +53,11 @@ An instrument with no quote reports an *unknown* market value, not zero — the 
 
 ## Adding instruments
 
-Use **Find an Instrument** on the Instruments page (admin): search by stock number or company name — `2330`, `6488`, `TSLA`, `taiwan semiconductor` — and add a result in one click. The symbol, market and currency come from the price provider, so what you add is guaranteed to be quotable.
+Search on the Instruments page (admin) by stock number or company name — `2330`, `6488`, `TSLA`, `taiwan semiconductor` — and add a result in one click. The symbol, market, currency, name **and current price** all come from the price provider; there is nothing to type and nothing to mistype.
 
-This matters because a hand-typed symbol has no such guarantee, and the mistake only shows up later as a quote that never arrives. Enter the bare stock number, never the provider's suffixed form: `2330`, not `2330.TW`.
+**An instrument that cannot be priced cannot be added at all.** The quote is fetched as part of creating it, and a symbol the provider does not know is refused outright rather than sitting in the list looking normal until a quote fails to arrive weeks later. It also means a new instrument is priced immediately, so holdings can be valued as soon as a trade is recorded.
 
-Only TWSE, TPEX, NYSE and NASDAQ listings are offered; other exchanges, indices and futures are filtered out. The provider matches symbols and English names but **not Chinese** — search `2330` or `taiwan semiconductor`, not `台積電`. A manual form is still there for anything not listed.
+Only TWSE, TPEX, NYSE and NASDAQ listings can be priced, so other exchanges, indices and futures are filtered out of results. The provider matches symbols and English names but **not Chinese** — search `2330`, not `台積電`. You can rename an instrument afterwards to whatever you like; the name is the one part of it this app owns rather than the provider.
 
 ## Quotes
 

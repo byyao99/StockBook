@@ -136,8 +136,10 @@ export const instrumentApi = {
     request<InstrumentCandidate[]>(`/instruments/search?q=${encodeURIComponent(q)}`),
   create: (input: InstrumentInput) =>
     request<Instrument>('/instruments', { method: 'POST', body: JSON.stringify(input) }),
-  update: (id: string, input: InstrumentInput) =>
-    request<Instrument>(`/instruments/${id}`, { method: 'PUT', body: JSON.stringify(input) }),
+  // Only the display name is editable: symbol and market decide how the
+  // instrument is priced, and currency belongs to the provider.
+  rename: (id: string, name: string) =>
+    request<Instrument>(`/instruments/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
   // Quotes are a separate endpoint from the rest of the record: keeping prices
   // current is routine daily work, editing the master data is not. Passing null
   // clears the quote (and its timestamp) rather than setting it to zero.

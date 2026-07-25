@@ -53,12 +53,12 @@ export interface Instrument {
   updated_at: string
 }
 
+// Adding an instrument names a listing; everything else about it — the name,
+// the currency, the opening price — comes from the price provider, which is the
+// authority on what an instrument is called and what it trades in.
 export interface InstrumentInput {
   symbol: string
-  name: string
   market: string
-  // Optional; the server defaults it from the market when omitted.
-  currency?: Currency
 }
 
 export type TransactionSide = 'buy' | 'sell'

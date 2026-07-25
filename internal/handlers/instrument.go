@@ -38,31 +38,26 @@ func NewInstrumentHandler(s *db.DB, q QuoteProvider) *InstrumentHandler {
 	return &InstrumentHandler{db: s, quotes: q}
 }
 
-// instrumentRequest is the payload for creating or replacing an instrument. The
-// quote is not settable here — see SetPrice.
-type instrumentRequest struct {
+// createInstrumentRequest names a listing to add. Only the symbol and market
+// are accepted: the name, currency and opening price all come from the provider,
+// so nothing a caller claims about an instrument can disagree with the source
+// that will price it.
+type createInstrumentRequest struct {
 	Symbol string `json:"symbol" binding:"required,max=20"`
-	Name   string `json:"name" binding:"required,max=120"`
 	Market string `json:"market" binding:"required"`
-	// Currency is optional; an omitted one defaults to whatever the market
-	// normally trades in, which is right for the overwhelming majority of cases
-	// and still overridable for the rest.
-	Currency string `json:"currency"`
 }
 
-// normalize trims the fields and folds the symbol, market and currency to their
-// canonical spellings, so that "  2330 " and "twse" match an existing 2330/TWSE
-// rather than creating a near-duplicate.
-func (r *instrumentRequest) normalize() error {
+// normalize folds the symbol and market to their canonical spellings, so that
+// "  2330 " and "twse" match an existing 2330/TWSE rather than creating a
+// near-duplicate.
+func (r *createInstrumentRequest) normalize() error {
 	r.Symbol = strings.ToUpper(strings.TrimSpace(r.Symbol))
-	r.Name = strings.TrimSpace(r.Name)
 	if r.Symbol == "" {
 		return errEmptySymbol
 	}
 	// A symbol carrying an exchange suffix is a provider ticker pasted whole.
 	// The suffix is derived from the market, so keeping it would produce
-	// "2330.TW.TW", and the only symptom would be a quote that never arrives —
-	// long after the mistake was made.
+	// "2330.TW.TW" and the lookup below would fail for a confusing reason.
 	if suffix, hasSuffix := quotes.ExchangeSuffix(r.Symbol); hasSuffix {
 		return &validationError{fmt.Sprintf(
 			"symbol should not include the %s exchange suffix; enter %q and select the market instead",
@@ -73,23 +68,12 @@ func (r *instrumentRequest) normalize() error {
 		return errUnknownMarket
 	}
 	r.Market = market
-
-	if strings.TrimSpace(r.Currency) == "" {
-		r.Currency = string(models.DefaultCurrencyForMarket(market))
-		return nil
-	}
-	currency, ok := models.CanonicalCurrency(strings.TrimSpace(r.Currency))
-	if !ok {
-		return errUnknownCurrency
-	}
-	r.Currency = string(currency)
 	return nil
 }
 
 var (
-	errEmptySymbol     = &validationError{"symbol must not be blank"}
-	errUnknownMarket   = &validationError{"market must be one of: " + strings.Join(models.Markets, ", ")}
-	errUnknownCurrency = &validationError{"currency must be TWD or USD"}
+	errEmptySymbol   = &validationError{"symbol must not be blank"}
+	errUnknownMarket = &validationError{"market must be one of: " + strings.Join(models.Markets, ", ")}
 )
 
 // validationError is a request-level problem that always maps to 400.
@@ -98,8 +82,25 @@ type validationError struct{ msg string }
 func (e *validationError) Error() string { return e.msg }
 
 // Create handles POST /api/v1/instruments (admin only).
+//
+// An instrument is only created if the provider can price it: the quote is
+// fetched first, and its failure is the request's failure. That makes an
+// unquotable instrument unrepresentable rather than merely discouraged — the
+// state that produced every quote problem so far (a symbol the provider has
+// never heard of, sitting in the master data looking normal) can no longer
+// exist. It also means a new instrument arrives already priced, so nothing has
+// to be typed in by hand afterwards.
+//
+// The name and currency are taken from the provider rather than the caller, for
+// the same reason transaction amounts are computed server-side: the authority
+// on what an instrument is called and what it trades in is the source that
+// quotes it.
 func (h *InstrumentHandler) Create(c *gin.Context) {
-	var req instrumentRequest
+	if h.quotes == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quote lookup is not configured"})
+		return
+	}
+	var req createInstrumentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -109,12 +110,53 @@ func (h *InstrumentHandler) Create(c *gin.Context) {
 		return
 	}
 
+	ticker, ok := quotes.Ticker(req.Symbol, req.Market)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "no quote source for market " + req.Market +
+				"; only markets with a price feed can be tracked",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), searchTimeout)
+	defer cancel()
+
+	quote, err := h.quotes.Fetch(ctx, ticker)
+	if err != nil {
+		// Separate "the provider does not know this symbol", which the caller
+		// can fix by choosing a different one, from "the provider is unwell",
+		// which they can only wait out.
+		if errors.Is(err, quotes.ErrNoQuote) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	// Cross-check the listing actually reached: a symbol paired with the wrong
+	// market can still resolve to some other exchange's instrument, and adopting
+	// that silently would file a foreign listing under a local market.
+	if _, market, ok := quotes.FromTicker(ticker, quote.Exchange); !ok || market != req.Market {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf(
+			"%s resolves to a %s listing, not %s", ticker, quote.Exchange, req.Market)})
+		return
+	}
+
+	name := quote.Name
+	if name == "" {
+		name = req.Symbol
+	}
+	now := time.Now()
 	item, err := h.db.CreateInstrument(models.Instrument{
-		ID:       uuid.NewString(),
-		Symbol:   req.Symbol,
-		Name:     req.Name,
-		Market:   req.Market,
-		Currency: models.Currency(req.Currency),
+		ID:             uuid.NewString(),
+		Symbol:         req.Symbol,
+		Name:           name,
+		Market:         req.Market,
+		Currency:       quote.Currency,
+		LastPrice:      &quote.Price,
+		PriceUpdatedAt: &quote.AsOf,
+		QuoteCheckedAt: &now,
 	})
 	if err != nil {
 		respondDBError(c, err)
@@ -158,26 +200,36 @@ func (h *InstrumentHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": item})
 }
 
-// Update handles PUT /api/v1/instruments/:id (admin only). Renaming an
-// instrument does not rewrite history: existing transactions keep the symbol
-// they were entered with.
+// renameInstrumentRequest carries the one thing about an instrument that is
+// this system's to decide.
+type renameInstrumentRequest struct {
+	Name string `json:"name" binding:"required,max=120"`
+}
+
+// Update handles PUT /api/v1/instruments/:id (admin only) and renames an
+// instrument.
+//
+// Only the display name is editable. The symbol and market are its identity and
+// determine how it is priced — editing them is what filed 2330 under TPEX and
+// left it unquotable — while the currency belongs to the provider and is baked
+// into every cost basis recorded since. A listing entered wrongly is deleted and
+// re-added, which the ledger guard already prevents once trades exist against it.
+//
+// Renaming does not rewrite history: existing transactions keep the symbol they
+// were entered with.
 func (h *InstrumentHandler) Update(c *gin.Context) {
-	var req instrumentRequest
+	var req renameInstrumentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := req.normalize(); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name must not be blank"})
 		return
 	}
 
-	item, err := h.db.UpdateInstrument(c.Param("id"), models.Instrument{
-		Symbol:   req.Symbol,
-		Name:     req.Name,
-		Market:   req.Market,
-		Currency: models.Currency(req.Currency),
-	})
+	item, err := h.db.RenameInstrument(c.Param("id"), name)
 	if err != nil {
 		respondDBError(c, err)
 		return

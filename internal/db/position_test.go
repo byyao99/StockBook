@@ -379,10 +379,8 @@ func TestInstrumentRenameDoesNotRewriteHistory(t *testing.T) {
 	inst := seedInstrument(t, s, "OLD")
 	tx := mustRecord(t, s, user.ID, inst.ID, entry{models.SideBuy, 10, 1000, 0, 1})
 
-	if _, err := s.UpdateInstrument(inst.ID, models.Instrument{
-		Symbol: "NEW", Name: "Renamed Corp", Market: "TWSE", Currency: models.CurrencyTWD,
-	}); err != nil {
-		t.Fatalf("UpdateInstrument: %v", err)
+	if _, err := s.RenameInstrument(inst.ID, "Renamed Corp"); err != nil {
+		t.Fatalf("RenameInstrument: %v", err)
 	}
 
 	stored, err := s.GetTransaction(tx.ID, user.ID)

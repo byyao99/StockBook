@@ -28,9 +28,11 @@ type testEnv struct {
 	am *auth.Manager
 }
 
-// setup wires a router with no quote provider, which is what most tests want.
+// setup wires a router with a provider that answers for any modelled ticker.
+// Creating an instrument now requires a quotable symbol, so the default has to
+// know one; tests that care about a specific answer pass their own stub.
 func setup(t *testing.T) *testEnv {
-	return setupWithFetcher(t, nil)
+	return setupWithFetcher(t, &stubFetcher{permissive: true})
 }
 
 // setupWithFetcher wires a router whose instrument handler uses the given market
@@ -139,7 +141,7 @@ func TestHealth(t *testing.T) {
 
 func TestInstrumentWritesRequireAdmin(t *testing.T) {
 	e := setup(t)
-	payload := map[string]any{"symbol": "2330", "name": "TSMC", "market": "TWSE"}
+	payload := map[string]any{"symbol": "2330", "market": "TWSE"}
 
 	if rec := e.do(t, http.MethodPost, "/api/v1/instruments", payload, ""); rec.Code != http.StatusUnauthorized {
 		t.Errorf("no token: got %d, want 401", rec.Code)
@@ -175,7 +177,7 @@ func TestInstrumentSymbolIsNormalizedAndUnique(t *testing.T) {
 	admin := e.token(t, "admin", models.RoleAdmin)
 
 	rec := e.do(t, http.MethodPost, "/api/v1/instruments",
-		map[string]any{"symbol": "  aapl ", "name": "Apple", "market": "nasdaq"}, admin)
+		map[string]any{"symbol": "  aapl ", "market": "nasdaq"}, admin)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("got %d, want 201 (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -190,14 +192,14 @@ func TestInstrumentSymbolIsNormalizedAndUnique(t *testing.T) {
 
 	// A differently-cased duplicate must collide rather than create a twin.
 	rec = e.do(t, http.MethodPost, "/api/v1/instruments",
-		map[string]any{"symbol": "aapl", "name": "Apple Inc", "market": "NASDAQ"}, admin)
+		map[string]any{"symbol": "aapl", "market": "NASDAQ"}, admin)
 	if rec.Code != http.StatusConflict {
 		t.Errorf("duplicate: got %d, want 409 (body: %s)", rec.Code, rec.Body.String())
 	}
 
 	// An unknown market is a 400, not a silently-stored free-text value.
 	rec = e.do(t, http.MethodPost, "/api/v1/instruments",
-		map[string]any{"symbol": "VOD", "name": "Vodafone", "market": "LSE"}, admin)
+		map[string]any{"symbol": "VOD", "market": "LSE"}, admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("unknown market: got %d, want 400", rec.Code)
 	}

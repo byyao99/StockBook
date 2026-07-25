@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -25,6 +26,11 @@ type stubFetcher struct {
 	calls     []string
 	results   []quotes.SearchResult
 	searchErr error
+	// permissive answers for any ticker whose market this system models,
+	// deriving the exchange from the suffix. Creating an instrument now requires
+	// a quotable ticker, so tests that add one through the API need a provider
+	// that knows it without every test enumerating symbols.
+	permissive bool
 }
 
 // Search returns whatever the test staged, so the pick-and-add flow can be
@@ -41,11 +47,35 @@ func (s *stubFetcher) Fetch(_ context.Context, ticker string) (quotes.Quote, err
 	if err, ok := s.fail[ticker]; ok {
 		return quotes.Quote{}, err
 	}
-	q, ok := s.quotes[ticker]
-	if !ok {
-		return quotes.Quote{}, errors.New("no data found, symbol may be delisted")
+	if q, ok := s.quotes[ticker]; ok {
+		return q, nil
 	}
-	return q, nil
+	if s.permissive {
+		return synthesizeQuote(ticker), nil
+	}
+	// Wrapped the way the real provider wraps it, so callers that distinguish
+	// "unknown symbol" from "provider is unwell" are exercised faithfully.
+	return quotes.Quote{}, fmt.Errorf("%w for %s: No data found, symbol may be delisted",
+		quotes.ErrNoQuote, ticker)
+}
+
+// synthesizeQuote invents a plausible answer for a ticker, with the exchange
+// and currency that its suffix implies so the create path's cross-check passes.
+func synthesizeQuote(ticker string) quotes.Quote {
+	exchange, currency := "NMS", models.CurrencyUSD
+	switch {
+	case strings.HasSuffix(ticker, ".TWO"):
+		exchange, currency = "TWO", models.CurrencyTWD
+	case strings.HasSuffix(ticker, ".TW"):
+		exchange, currency = "TAI", models.CurrencyTWD
+	}
+	return quotes.Quote{
+		Price:    10000,
+		Currency: currency,
+		AsOf:     time.Now(),
+		Name:     ticker + " Corp",
+		Exchange: exchange,
+	}
 }
 
 // refreshResponse mirrors the endpoint's payload.
@@ -278,79 +308,132 @@ func TestRefreshRefusesACurrencyMismatch(t *testing.T) {
 	}
 }
 
-func TestInstrumentCurrencyDefaultsFromMarket(t *testing.T) {
-	e := setup(t)
+// The name and currency on file come from the provider, not from whatever the
+// caller claimed — the authority on what an instrument is called and what it
+// trades in is the source that prices it.
+func TestCreateTakesNameAndCurrencyFromTheProvider(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{quotes: map[string]quotes.Quote{
+		"2330.TW": {
+			Price: 235000, Currency: models.CurrencyTWD, AsOf: time.Now(),
+			Name: "Taiwan Semiconductor Manufacturing Company Limited", Exchange: "TAI",
+		},
+	}})
 	admin := e.token(t, "admin", models.RoleAdmin)
 
-	for _, tc := range []struct{ market, want string }{
-		{"NASDAQ", "USD"}, {"NYSE", "USD"}, {"TWSE", "TWD"}, {"TPEX", "TWD"},
-	} {
-		rec := e.do(t, http.MethodPost, "/api/v1/instruments", map[string]any{
-			"symbol": "S" + tc.market, "name": "Test", "market": tc.market,
-		}, admin)
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("%s: got %d (body: %s)", tc.market, rec.Code, rec.Body.String())
-		}
-		var created models.Instrument
-		decodeData(t, rec, &created)
-		if string(created.Currency) != tc.want {
-			t.Errorf("%s defaulted to %q, want %q", tc.market, created.Currency, tc.want)
-		}
-	}
-
-	// An explicit currency still wins over the market's default.
 	rec := e.do(t, http.MethodPost, "/api/v1/instruments", map[string]any{
-		"symbol": "ADR", "name": "Overridden", "market": "TWSE", "currency": "usd",
+		"symbol": "2330", "market": "TWSE",
+		// These are ignored: the provider decides.
+		"name": "WRONG", "currency": "USD",
 	}, admin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
 	var created models.Instrument
 	decodeData(t, rec, &created)
-	if created.Currency != models.CurrencyUSD {
-		t.Errorf("explicit currency = %q, want USD", created.Currency)
-	}
 
-	// An unsupported one is a 400.
-	rec = e.do(t, http.MethodPost, "/api/v1/instruments", map[string]any{
-		"symbol": "JPY1", "name": "Yen", "market": "OTHER", "currency": "JPY",
-	}, admin)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("unsupported currency: got %d, want 400", rec.Code)
+	if created.Name != "Taiwan Semiconductor Manufacturing Company Limited" {
+		t.Errorf("name = %q, want the provider's", created.Name)
+	}
+	if created.Currency != models.CurrencyTWD {
+		t.Errorf("currency = %q, want the provider's TWD", created.Currency)
+	}
+	// A new instrument arrives already priced, so nothing has to be entered by
+	// hand and its holdings can be valued immediately.
+	if created.LastPrice == nil || *created.LastPrice != 235000 {
+		t.Errorf("last_price = %v, want 235000 fetched at creation", created.LastPrice)
+	}
+	if created.PriceUpdatedAt == nil || created.QuoteCheckedAt == nil {
+		t.Error("both quote timestamps should be stamped at creation")
 	}
 }
 
-// Changing an instrument's currency after trades exist would silently
-// reinterpret every cost basis recorded under it.
-func TestCurrencyCannotChangeOnceTradesExist(t *testing.T) {
-	e := setup(t)
+// An instrument the provider cannot price cannot be created. This is what makes
+// an unquotable instrument unrepresentable rather than merely discouraged.
+func TestCreateRefusesAnInstrumentTheProviderDoesNotKnow(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{}) // knows nothing
 	admin := e.token(t, "admin", models.RoleAdmin)
-	user := e.token(t, "trader", models.RoleUser)
+
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments",
+		map[string]any{"symbol": "NOSUCH", "market": "NASDAQ"}, admin)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("got %d, want 422 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "delisted") {
+		t.Errorf("body %s should carry the provider's wording", rec.Body.String())
+	}
+
+	// And nothing was stored.
+	list := e.do(t, http.MethodGet, "/api/v1/instruments", nil, admin)
+	var items []models.Instrument
+	decodeData(t, list, &items)
+	if len(items) != 0 {
+		t.Errorf("%d instruments stored despite the failure", len(items))
+	}
+}
+
+// A market with no price feed cannot be tracked at all now, so it is refused up
+// front rather than creating something that can never be valued.
+func TestCreateRefusesAMarketWithNoPriceFeed(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{permissive: true})
+	admin := e.token(t, "admin", models.RoleAdmin)
+
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments",
+		map[string]any{"symbol": "PRIVATE", "market": "OTHER"}, admin)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("got %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// A symbol paired with the wrong market can still resolve to some other
+// exchange's instrument; adopting that would file a foreign listing locally.
+func TestCreateRefusesAListingFromAnotherExchange(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{quotes: map[string]quotes.Quote{
+		// The caller asks for NASDAQ, but this ticker is a Frankfurt listing.
+		"TL0": {Price: 30000, Currency: models.CurrencyUSD, AsOf: time.Now(), Name: "Tesla", Exchange: "FRA"},
+	}})
+	admin := e.token(t, "admin", models.RoleAdmin)
+
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments",
+		map[string]any{"symbol": "TL0", "market": "NASDAQ"}, admin)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("got %d, want 422 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "FRA") {
+		t.Errorf("body %s should name the exchange actually reached", rec.Body.String())
+	}
+}
+
+// Only the display name is editable. Symbol and market are identity and decide
+// how the instrument is priced; currency belongs to the provider and is baked
+// into every cost basis recorded since.
+func TestUpdateOnlyRenames(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{permissive: true})
+	admin := e.token(t, "admin", models.RoleAdmin)
 	inst := e.seedInstrumentIn(t, "2330", "TWSE", models.CurrencyTWD)
 
-	// Before any trade, correcting the currency is allowed.
 	rec := e.do(t, http.MethodPut, "/api/v1/instruments/"+inst.ID, map[string]any{
-		"symbol": "2330", "name": "TSMC", "market": "TWSE", "currency": "USD",
+		"name": "台積電",
+		// Ignored: not part of the rename contract.
+		"symbol": "9999", "market": "NASDAQ", "currency": "USD",
 	}, admin)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("pre-trade change: got %d (body: %s)", rec.Code, rec.Body.String())
+		t.Fatalf("got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var renamed models.Instrument
+	decodeData(t, rec, &renamed)
+
+	if renamed.Name != "台積電" {
+		t.Errorf("name = %q, want the new one", renamed.Name)
+	}
+	if renamed.Symbol != "2330" || renamed.Market != "TWSE" || renamed.Currency != models.CurrencyTWD {
+		t.Errorf("identity changed: %+v", renamed)
 	}
 
-	rec = e.do(t, http.MethodPost, "/api/v1/transactions",
-		tradePayload(inst.ID, models.SideBuy, 10, 90000, time.Now().Add(-time.Hour)), user)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("trade: got %d (body: %s)", rec.Code, rec.Body.String())
-	}
-
-	rec = e.do(t, http.MethodPut, "/api/v1/instruments/"+inst.ID, map[string]any{
-		"symbol": "2330", "name": "TSMC", "market": "TWSE", "currency": "TWD",
-	}, admin)
-	if rec.Code != http.StatusConflict {
-		t.Errorf("post-trade change: got %d, want 409 (body: %s)", rec.Code, rec.Body.String())
-	}
-	// Everything else about the record is still editable.
-	rec = e.do(t, http.MethodPut, "/api/v1/instruments/"+inst.ID, map[string]any{
-		"symbol": "2330", "name": "Taiwan Semiconductor", "market": "TWSE", "currency": "USD",
-	}, admin)
-	if rec.Code != http.StatusOK {
-		t.Errorf("renaming: got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	// A blank name is refused rather than wiping the label.
+	rec = e.do(t, http.MethodPut, "/api/v1/instruments/"+inst.ID,
+		map[string]any{"name": "   "}, admin)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("blank name: got %d, want 400", rec.Code)
 	}
 }
 
@@ -423,7 +506,7 @@ func TestSymbolRejectsAPastedExchangeSuffix(t *testing.T) {
 
 	for _, symbol := range []string{"2330.TW", "2330.tw", "6488.TWO"} {
 		rec := e.do(t, http.MethodPost, "/api/v1/instruments", map[string]any{
-			"symbol": symbol, "name": "TSMC", "market": "TWSE",
+			"symbol": symbol, "market": "TWSE",
 		}, admin)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: got %d, want 400 (body: %s)", symbol, rec.Code, rec.Body.String())
@@ -436,9 +519,9 @@ func TestSymbolRejectsAPastedExchangeSuffix(t *testing.T) {
 	}
 
 	// The bare symbol is accepted, and US symbols with a hyphen are unaffected.
-	for _, tc := range []struct{ symbol, market string }{{"2330", "TWSE"}, {"BRK-B", "NYSE"}} {
+	for _, tc := range []struct{ symbol, market string }{{"2330", "TWSE"}, {"BRK-B", "NASDAQ"}} {
 		rec := e.do(t, http.MethodPost, "/api/v1/instruments", map[string]any{
-			"symbol": tc.symbol, "name": "Test", "market": tc.market,
+			"symbol": tc.symbol, "market": tc.market,
 		}, admin)
 		if rec.Code != http.StatusCreated {
 			t.Errorf("%s: got %d, want 201 (body: %s)", tc.symbol, rec.Code, rec.Body.String())
@@ -486,7 +569,7 @@ func TestSearchRequiresAdmin(t *testing.T) {
 // A candidate carries everything an add needs, so choosing one types nothing —
 // and a symbol taken from the provider's own answer is quotable by construction.
 func TestSearchReturnsReadyToAddCandidates(t *testing.T) {
-	fetcher := &stubFetcher{results: []quotes.SearchResult{
+	fetcher := &stubFetcher{permissive: true, results: []quotes.SearchResult{
 		{Symbol: "TSLA", Name: "Tesla, Inc.", Market: "NASDAQ", Currency: models.CurrencyUSD, Ticker: "TSLA"},
 		{Symbol: "2330", Name: "TSMC", Market: "TWSE", Currency: models.CurrencyTWD, Ticker: "2330.TW"},
 	}}
@@ -517,8 +600,7 @@ func TestSearchReturnsReadyToAddCandidates(t *testing.T) {
 
 	// A candidate must be addable exactly as returned.
 	rec := e.do(t, http.MethodPost, "/api/v1/instruments", map[string]any{
-		"symbol": got[0].Symbol, "name": got[0].Name,
-		"market": got[0].Market, "currency": got[0].Currency,
+		"symbol": got[0].Symbol, "market": got[0].Market,
 	}, admin)
 	if rec.Code != http.StatusCreated {
 		t.Errorf("adding a candidate verbatim: got %d (body: %s)", rec.Code, rec.Body.String())

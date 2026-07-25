@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { instrumentApi } from '../api/client'
-import { formatCentsOrUnknown, fromCents, toCents } from '../money'
+import { formatCentsOrUnknown } from '../money'
 import { isAdmin } from '../session'
 import PaginationBar from '../components/PaginationBar.vue'
-import { CURRENCIES, MARKETS } from '../types'
-import type { Currency, Instrument, InstrumentCandidate, RefreshResult } from '../types'
+import { MARKETS } from '../types'
+import type { Instrument, InstrumentCandidate, RefreshResult } from '../types'
 
 const PAGE_SIZE = 20
 
@@ -19,23 +19,52 @@ const success = ref('')
 const searchQuery = ref('')
 const marketFilter = ref('')
 
-const editingId = ref<string | null>(null)
-const form = reactive<{ symbol: string; name: string; market: string; currency: Currency }>({
-  symbol: '',
-  name: '',
-  market: 'TWSE',
-  currency: 'TWD',
-})
-
 // Looking an instrument up with the provider and adding it in one click. This
-// is the primary way to add an instrument: a symbol typed by hand has no
-// guarantee the provider knows it, and the mistake only surfaces later as a
-// quote that never arrives. A symbol taken from the provider's own answer is
-// quotable by construction.
+// is the only way to add one: an instrument the provider cannot price has no
+// use here, since every number on the holdings page derives from a quote.
+// Adding a candidate therefore also arrives already priced.
 const lookupQuery = ref('')
 const candidates = ref<InstrumentCandidate[]>([])
 const searching = ref(false)
 const searched = ref(false)
+
+// Renaming is the one thing about an instrument this app decides rather than
+// the provider — useful for putting a Chinese name on a listing the provider
+// only knows in capitalised English.
+const renamingId = ref<string | null>(null)
+const renameDraft = ref('')
+
+async function load() {
+  loading.value = true
+  error.value = ''
+  try {
+    const page = await instrumentApi.list(PAGE_SIZE, offset.value, {
+      q: searchQuery.value.trim() || undefined,
+      market: marketFilter.value || undefined,
+    })
+    items.value = page.items
+    total.value = page.pagination.total
+    if (items.value.length === 0 && offset.value > 0) {
+      offset.value = Math.max(0, offset.value - PAGE_SIZE)
+      await load()
+    }
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    loading.value = false
+  }
+}
+
+function changePage(newOffset: number) {
+  offset.value = newOffset
+  load()
+}
+
+// Changing a filter restarts paging from the first page.
+function applyFilter() {
+  offset.value = 0
+  load()
+}
 
 async function lookup() {
   const q = lookupQuery.value.trim()
@@ -59,13 +88,16 @@ async function addCandidate(candidate: InstrumentCandidate) {
   error.value = ''
   success.value = ''
   try {
-    await instrumentApi.create({
+    const created = await instrumentApi.create({
       symbol: candidate.symbol,
-      name: candidate.name,
       market: candidate.market,
-      currency: candidate.currency,
     })
-    success.value = `Added ${candidate.symbol} — ${candidate.name}.`
+    // The server prices it on the way in, so say so — it saves the user
+    // wondering whether a quote still has to be fetched separately.
+    success.value = `Added ${created.symbol} — ${created.name}, priced at ${formatCentsOrUnknown(
+      created.last_price,
+      created.currency,
+    )}.`
     // Mark it in place rather than re-searching, so the rest of the results
     // stay put and several can be added in a row.
     candidate.exists = true
@@ -81,118 +113,39 @@ function clearLookup() {
   searched.value = false
 }
 
+function startRename(item: Instrument) {
+  renamingId.value = item.id
+  renameDraft.value = item.name
+}
+
+function cancelRename() {
+  renamingId.value = null
+  renameDraft.value = ''
+}
+
+async function saveRename(item: Instrument) {
+  const name = renameDraft.value.trim()
+  if (!name) return
+  error.value = ''
+  success.value = ''
+  try {
+    await instrumentApi.rename(item.id, name)
+    success.value = `Renamed ${item.symbol}.`
+    cancelRename()
+    await load()
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
 // The outcome of the last quote refresh, kept so the per-symbol failures stay
 // on screen — a count alone would not say which ticker is wrong or why.
 const refreshResults = ref<RefreshResult[]>([])
 const refreshing = ref(false)
 
-// Picking a market pre-selects the currency it normally trades in, mirroring
-// the server's own default. Still overridable for the odd ADR.
-function marketChanged() {
-  form.currency = form.market === 'NYSE' || form.market === 'NASDAQ' ? 'USD' : 'TWD'
-}
-
-// Quotes are edited inline per row rather than through the main form: setting a
-// price is a separate endpoint and a different kind of task from editing the
-// master data.
-const priceDrafts = reactive<Record<string, number | ''>>({})
-
-async function load() {
-  loading.value = true
-  error.value = ''
-  try {
-    const page = await instrumentApi.list(PAGE_SIZE, offset.value, {
-      q: searchQuery.value.trim() || undefined,
-      market: marketFilter.value || undefined,
-    })
-    items.value = page.items
-    total.value = page.pagination.total
-    for (const i of page.items) {
-      priceDrafts[i.id] = i.last_price === null ? '' : fromCents(i.last_price)
-    }
-    if (items.value.length === 0 && offset.value > 0) {
-      offset.value = Math.max(0, offset.value - PAGE_SIZE)
-      await load()
-    }
-  } catch (e) {
-    error.value = (e as Error).message
-  } finally {
-    loading.value = false
-  }
-}
-
-function changePage(newOffset: number) {
-  offset.value = newOffset
-  load()
-}
-
-// Changing a filter restarts paging from the first page.
-function applyFilter() {
-  offset.value = 0
-  load()
-}
-
-function resetForm() {
-  editingId.value = null
-  Object.assign(form, { symbol: '', name: '', market: 'TWSE', currency: 'TWD' })
-}
-
-function startEdit(item: Instrument) {
-  editingId.value = item.id
-  Object.assign(form, {
-    symbol: item.symbol,
-    name: item.name,
-    market: item.market,
-    currency: item.currency,
-  })
-}
-
-async function submit() {
-  error.value = ''
-  success.value = ''
-  const input = {
-    symbol: form.symbol,
-    name: form.name,
-    market: form.market,
-    currency: form.currency,
-  }
-  try {
-    if (editingId.value) {
-      await instrumentApi.update(editingId.value, input)
-      // Renaming does not rewrite the ledger — past trades keep the symbol they
-      // were entered with — so say so rather than leaving it a surprise.
-      success.value = 'Instrument updated. Existing trades keep their original symbol.'
-    } else {
-      await instrumentApi.create(input)
-      success.value = 'Instrument added.'
-    }
-    resetForm()
-    await load()
-  } catch (e) {
-    error.value = (e as Error).message
-  }
-}
-
-async function savePrice(item: Instrument) {
-  error.value = ''
-  success.value = ''
-  const draft = priceDrafts[item.id]
-  // An empty box clears the quote rather than setting it to zero: "unknown" and
-  // "worth nothing" are different claims.
-  const cents = draft === '' ? null : toCents(Number(draft))
-  try {
-    await instrumentApi.setPrice(item.id, cents)
-    success.value =
-      cents === null ? `Cleared the quote for ${item.symbol}.` : `Updated ${item.symbol}.`
-    await load()
-  } catch (e) {
-    error.value = (e as Error).message
-  }
-}
-
-// Fetches quotes for every instrument the provider can address. A partial
-// failure is normal — one delisted ticker must not stop the rest — so the
-// results are shown per symbol rather than collapsed into a single verdict.
+// Fetches quotes for every instrument. A partial failure is normal — one
+// delisted ticker must not stop the rest — so the results are shown per symbol
+// rather than collapsed into a single verdict.
 async function refreshQuotes() {
   refreshing.value = true
   error.value = ''
@@ -211,7 +164,7 @@ async function refreshQuotes() {
     }
     await load()
   } catch (e) {
-    // A whole-call failure (not configured, no network, not an admin).
+    // A whole-call failure (not configured, no network, rate-limited).
     error.value = (e as Error).message
   } finally {
     refreshing.value = false
@@ -233,7 +186,7 @@ async function remove(item: Instrument) {
   }
 }
 
-/** Renders a quote's age, or a nudge when there is none. */
+/** Renders a quote's age. Every instrument has one — none can be added unpriced. */
 function quoteAge(item: Instrument): string {
   if (!item.price_updated_at) return 'never set'
   const days = Math.floor((Date.now() - Date.parse(item.price_updated_at)) / 86_400_000)
@@ -250,13 +203,13 @@ onMounted(load)
     <p v-if="error" class="error">{{ error }}</p>
     <p v-if="success" class="success">{{ success }}</p>
 
-    <section v-if="isAdmin && !editingId" class="card">
-      <h2 class="section-title">Find an Instrument</h2>
+    <section v-if="isAdmin" class="card">
+      <h2 class="section-title">Add an Instrument</h2>
       <p class="muted lookup-hint">
-        Search by symbol or company name and add it in one click — the symbol,
-        market and currency come from the price provider, so the result is
-        guaranteed to be quotable. Chinese names are not matched; use the stock
-        number or the English name.
+        Search by stock number or company name and add it in one click — the
+        symbol, market, currency and current price all come from the price
+        provider, so there is nothing to type and nothing to mistype. Chinese
+        names are not matched; use the stock number or the English name.
       </p>
       <form class="lookup" @submit.prevent="lookup">
         <input
@@ -267,14 +220,20 @@ onMounted(load)
         <button type="submit" class="btn-primary" :disabled="searching">
           {{ searching ? 'Searching…' : 'Search' }}
         </button>
-        <button v-if="candidates.length > 0" type="button" class="btn-secondary" @click="clearLookup">
+        <button
+          v-if="candidates.length > 0"
+          type="button"
+          class="btn-secondary"
+          @click="clearLookup"
+        >
           Clear
         </button>
       </form>
 
       <p v-if="searched && candidates.length === 0" class="muted">
         Nothing found that this app can track. Only TWSE, TPEX, NYSE and NASDAQ
-        listings are supported — other exchanges, indices and futures are left out.
+        listings can be priced, so other exchanges, indices and futures are left
+        out — an instrument with no quote could not be valued anyway.
       </p>
       <ul v-if="candidates.length > 0" class="candidates">
         <li v-for="c in candidates" :key="c.ticker">
@@ -290,51 +249,6 @@ onMounted(load)
       </ul>
     </section>
 
-    <section v-if="isAdmin" class="card">
-      <h2 class="section-title">
-        {{ editingId ? 'Edit Instrument' : 'Add Manually' }}
-      </h2>
-      <p v-if="!editingId" class="muted lookup-hint">
-        For anything the provider does not list — an unlisted holding, or a
-        market this app does not fetch quotes for.
-      </p>
-      <form @submit.prevent="submit">
-        <div class="grid">
-          <div class="field">
-            <label>Symbol</label>
-            <input v-model="form.symbol" required maxlength="20" placeholder="e.g. 2330" />
-          </div>
-          <div class="field">
-            <label>Name</label>
-            <input v-model="form.name" required maxlength="120" placeholder="e.g. TSMC" />
-          </div>
-          <div class="field">
-            <label>Market</label>
-            <select v-model="form.market" required @change="marketChanged">
-              <option v-for="m in MARKETS" :key="m" :value="m">{{ m }}</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Currency</label>
-            <!-- Locked once trades exist: changing it would reinterpret every
-                 cost basis already recorded against this instrument, and the
-                 server refuses the change anyway. -->
-            <select v-model="form.currency" required>
-              <option v-for="c in CURRENCIES" :key="c" :value="c">{{ c }}</option>
-            </select>
-          </div>
-        </div>
-        <div class="actions">
-          <button type="submit" class="btn-primary">
-            {{ editingId ? 'Save Changes' : 'Add Instrument' }}
-          </button>
-          <button v-if="editingId" type="button" class="btn-secondary" @click="resetForm">
-            Cancel
-          </button>
-        </div>
-      </form>
-    </section>
-
     <section class="card">
       <div class="head">
         <h2 class="section-title">Instruments ({{ total }})</h2>
@@ -345,7 +259,7 @@ onMounted(load)
           <input
             v-model="searchQuery"
             type="search"
-            placeholder="Search symbol or name…"
+            placeholder="Filter the list…"
             @change="applyFilter"
             @keyup.enter="applyFilter"
           />
@@ -368,7 +282,10 @@ onMounted(load)
       </ul>
 
       <p v-if="loading" class="muted">Loading…</p>
-      <p v-else-if="items.length === 0" class="muted">No instruments found.</p>
+      <p v-else-if="items.length === 0" class="muted">
+        No instruments yet.
+        <template v-if="isAdmin">Search for one above to get started.</template>
+      </p>
       <div v-else class="table-wrap">
         <table>
           <thead>
@@ -377,7 +294,7 @@ onMounted(load)
               <th>Market</th>
               <th>Ccy</th>
               <th class="num">Last price</th>
-              <th>Quote set</th>
+              <th>Quote from</th>
               <th v-if="isAdmin"></th>
             </tr>
           </thead>
@@ -385,34 +302,19 @@ onMounted(load)
             <tr v-for="item in items" :key="item.id">
               <td>
                 <strong>{{ item.symbol }}</strong>
-                <div class="muted">{{ item.name }}</div>
+                <div v-if="renamingId === item.id" class="rename">
+                  <input v-model="renameDraft" maxlength="120" @keyup.enter="saveRename(item)" />
+                  <button class="btn-primary" @click="saveRename(item)">Save</button>
+                  <button class="btn-secondary" @click="cancelRename">Cancel</button>
+                </div>
+                <div v-else class="muted">{{ item.name }}</div>
               </td>
               <td>{{ item.market }}</td>
               <td class="muted">{{ item.currency }}</td>
-              <td class="num">
-                <template v-if="isAdmin">
-                  <input
-                    v-model="priceDrafts[item.id]"
-                    class="price-input"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    placeholder="—"
-                    @keyup.enter="savePrice(item)"
-                  />
-                </template>
-                <template v-else>{{
-                  formatCentsOrUnknown(item.last_price, item.currency)
-                }}</template>
-              </td>
-              <td>
-                <span :class="item.price_updated_at ? 'muted' : 'badge badge-warn'">
-                  {{ quoteAge(item) }}
-                </span>
-              </td>
+              <td class="num">{{ formatCentsOrUnknown(item.last_price, item.currency) }}</td>
+              <td class="muted">{{ quoteAge(item) }}</td>
               <td v-if="isAdmin" class="row-actions">
-                <button class="btn-secondary" @click="savePrice(item)">Save price</button>
-                <button class="btn-secondary" @click="startEdit(item)">Edit</button>
+                <button class="btn-secondary" @click="startRename(item)">Rename</button>
                 <button class="btn-danger" @click="remove(item)">Delete</button>
               </td>
             </tr>
@@ -420,9 +322,10 @@ onMounted(load)
         </table>
       </div>
       <p v-if="isAdmin" class="muted hint">
-        Clear a price box and save to mark an instrument as unquoted; its holdings
-        then show an unknown market value rather than zero. Refreshing leaves
-        quotes newer than 15 minutes alone.
+        Prices come from the provider; refreshing leaves quotes newer than 15
+        minutes alone. Only the display name is editable — a listing added
+        wrongly should be deleted and re-added, which is refused once trades
+        reference it.
       </p>
 
       <PaginationBar :limit="PAGE_SIZE" :offset="offset" :total="total" @change="changePage" />
@@ -431,11 +334,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-}
 .head {
   display: flex;
   align-items: center;
@@ -448,21 +346,25 @@ onMounted(load)
   gap: 8px;
 }
 .filter input,
-.filter select {
+.filter select,
+.filter button {
   width: auto;
-}
-.actions {
-  display: flex;
-  gap: 8px;
 }
 .row-actions {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
 }
-.price-input {
-  width: 110px;
-  text-align: right;
+.rename {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.rename input {
+  width: 180px;
+}
+.rename button {
+  width: auto;
 }
 .hint {
   font-size: 12px;
