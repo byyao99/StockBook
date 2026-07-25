@@ -17,7 +17,6 @@ function logout() {
       <nav class="nav">
         <RouterLink v-if="isAuthenticated" to="/positions" class="nav-link">Holdings</RouterLink>
         <RouterLink v-if="isAuthenticated" to="/transactions" class="nav-link">Ledger</RouterLink>
-        <RouterLink v-if="isAuthenticated" to="/instruments" class="nav-link">Instruments</RouterLink>
         <RouterLink v-if="isAdmin" to="/users" class="nav-link">Users</RouterLink>
       </nav>
       <div class="account">

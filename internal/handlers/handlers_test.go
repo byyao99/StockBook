@@ -139,7 +139,10 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-func TestInstrumentWritesRequireAdmin(t *testing.T) {
+// Adding an instrument is not privileged: it names a listing the provider has
+// verified, and a user who wants to record a trade in a stock nobody has
+// entered yet would otherwise be blocked from using the app at all.
+func TestAddingAnInstrumentNeedsAuthButNotAdmin(t *testing.T) {
 	e := setup(t)
 	payload := map[string]any{"symbol": "2330", "market": "TWSE"}
 
@@ -147,13 +150,32 @@ func TestInstrumentWritesRequireAdmin(t *testing.T) {
 		t.Errorf("no token: got %d, want 401", rec.Code)
 	}
 	user := e.token(t, "plainuser", models.RoleUser)
-	if rec := e.do(t, http.MethodPost, "/api/v1/instruments", payload, user); rec.Code != http.StatusForbidden {
-		t.Errorf("user token: got %d, want 403", rec.Code)
-	}
-	admin := e.token(t, "admin", models.RoleAdmin)
-	rec := e.do(t, http.MethodPost, "/api/v1/instruments", payload, admin)
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments", payload, user)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("admin token: got %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+		t.Fatalf("user token: got %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// Renaming and deleting stay with admins: they change entries other people are
+// already trading against.
+func TestRenameAndDeleteRequireAdmin(t *testing.T) {
+	e := setup(t)
+	user := e.token(t, "plainuser", models.RoleUser)
+	admin := e.token(t, "admin", models.RoleAdmin)
+	inst := e.seedInstrumentIn(t, "2330", "TWSE", models.CurrencyTWD)
+
+	rename := map[string]any{"name": "renamed"}
+	if rec := e.do(t, http.MethodPut, "/api/v1/instruments/"+inst.ID, rename, user); rec.Code != http.StatusForbidden {
+		t.Errorf("user renaming: got %d, want 403", rec.Code)
+	}
+	if rec := e.do(t, http.MethodDelete, "/api/v1/instruments/"+inst.ID, nil, user); rec.Code != http.StatusForbidden {
+		t.Errorf("user deleting: got %d, want 403", rec.Code)
+	}
+	if rec := e.do(t, http.MethodPut, "/api/v1/instruments/"+inst.ID, rename, admin); rec.Code != http.StatusOK {
+		t.Errorf("admin renaming: got %d, want 200", rec.Code)
+	}
+	if rec := e.do(t, http.MethodDelete, "/api/v1/instruments/"+inst.ID, nil, admin); rec.Code != http.StatusNoContent {
+		t.Errorf("admin deleting: got %d, want 204", rec.Code)
 	}
 }
 

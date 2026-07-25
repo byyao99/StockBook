@@ -71,22 +71,20 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 			u.DELETE("/:id", user.Delete)
 		}
 
-		// Instruments are shared master data: any signed-in user may read them
-		// (they need the list to enter a trade), but only an admin may change
-		// them. Quotes are a separate route from the rest of the record because
-		// keeping prices current is routine daily work while editing the master
-		// data is not.
+		// Instruments are shared master data, but adding one is not a privileged
+		// act: it names a listing the provider has verified, and a user who
+		// wants to record a trade in a stock nobody has entered yet would
+		// otherwise be blocked outright — worse than the stale-quote problem
+		// that opened the refresh endpoint. Renaming and deleting stay with
+		// admins, since those affect entries other people are already using.
+		//
+		// Search and create both reach the provider, so both are rate-limited.
 		i := v1.Group("/instruments", middleware.RequireAuth(am, s))
 		{
 			i.GET("", instrument.List)
 			i.GET("/:id", instrument.Get)
-			// Looking a symbol up before adding it is what keeps the master data
-			// free of instruments the provider has never heard of. Admin-only
-			// like the create it feeds, and rate-limited because each call
-			// reaches the provider.
-			i.GET("/search", middleware.RequireRole(am, s, models.RoleAdmin),
-				middleware.RateLimit(30, time.Minute), instrument.Search)
-			i.POST("", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Create)
+			i.GET("/search", middleware.RateLimit(30, time.Minute), instrument.Search)
+			i.POST("", middleware.RateLimit(20, time.Minute), instrument.Create)
 			i.PUT("/:id", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Update)
 			i.PATCH("/:id/price", middleware.RequireRole(am, s, models.RoleAdmin), instrument.SetPrice)
 			// Fetching quotes reaches an external provider, so it is an explicit

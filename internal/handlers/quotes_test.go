@@ -554,15 +554,17 @@ func (e *testEnv) search(t *testing.T, token, query string) ([]struct {
 	return out, rec.Code
 }
 
-func TestSearchRequiresAdmin(t *testing.T) {
+// Search feeds the add flow, so it is open to whoever may add: a plain user
+// recording a trade needs to find the listing themselves.
+func TestSearchNeedsAuthButNotAdmin(t *testing.T) {
 	e := setupWithFetcher(t, &stubFetcher{})
 
 	if _, code := e.search(t, "", "tesla"); code != http.StatusUnauthorized {
 		t.Errorf("no token: got %d, want 401", code)
 	}
 	user := e.token(t, "trader", models.RoleUser)
-	if _, code := e.search(t, user, "tesla"); code != http.StatusForbidden {
-		t.Errorf("user token: got %d, want 403", code)
+	if _, code := e.search(t, user, "tesla"); code != http.StatusOK {
+		t.Errorf("user token: got %d, want 200", code)
 	}
 }
 

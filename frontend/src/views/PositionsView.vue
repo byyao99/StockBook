@@ -17,7 +17,7 @@ import {
   unpricedCount,
 } from '../positionMath'
 import PaginationBar from '../components/PaginationBar.vue'
-import type { CurrencySummary, Position } from '../types'
+import type { CurrencySummary, Position, RefreshResult } from '../types'
 
 const PAGE_SIZE = 20
 
@@ -33,6 +33,10 @@ const loading = ref(false)
 const refreshing = ref(false)
 const error = ref('')
 const success = ref('')
+// Per-symbol refresh failures. They used to live on a separate instruments
+// page; with quotes managed from here they have to be shown here, or a failed
+// fetch would report a count with no way to see which symbol it was.
+const refreshResults = ref<RefreshResult[]>([])
 
 async function load() {
   loading.value = true
@@ -70,15 +74,17 @@ async function refreshQuotes() {
   refreshing.value = true
   error.value = ''
   success.value = ''
+  refreshResults.value = []
   try {
     const report = await instrumentApi.refreshQuotes()
+    refreshResults.value = report.results.filter((r) => r.status !== 'updated')
     success.value = `Updated ${report.updated} ${report.updated === 1 ? 'quote' : 'quotes'}.`
     if (report.fresh > 0) {
       // Without this a no-op refresh looks like a button that does nothing.
       success.value += ` ${report.fresh} already current.`
     }
     if (report.failed > 0) {
-      success.value += ` ${report.failed} could not be fetched — see the Instruments page.`
+      success.value += ` ${report.failed} could not be fetched — see below.`
     }
     await load()
   } catch (e) {
@@ -113,6 +119,17 @@ onMounted(load)
         {{ refreshing ? 'Fetching quotes…' : 'Refresh quotes' }}
       </button>
     </div>
+
+    <ul v-if="refreshResults.length > 0" class="refresh-log">
+      <li v-for="r in refreshResults" :key="r.instrument_id">
+        <span :class="['badge', r.status === 'failed' ? 'badge-sell' : 'badge-warn']">
+          {{ r.status }}
+        </span>
+        <strong>{{ r.symbol }}</strong>
+        <span v-if="r.ticker" class="ticker">looked up as {{ r.ticker }}</span>
+        <span class="muted">{{ r.error }}</span>
+      </li>
+    </ul>
 
     <!-- One block per currency. Side by side rather than summed, because a
          combined figure would require an exchange rate this system does not
@@ -155,9 +172,7 @@ onMounted(load)
       <p v-if="unpricedCount(s) > 0" class="notice">
         {{ unpricedCount(s) }} open {{ unpricedCount(s) === 1 ? 'holding has' : 'holdings have' }}
         no quote, so the {{ s.currency }} market value and unrealized figures exclude
-        {{ unpricedCount(s) === 1 ? 'it' : 'them' }}. Try Refresh quotes above; if
-        that cannot reach {{ unpricedCount(s) === 1 ? 'it' : 'them' }}, an admin
-        can set a price by hand on the Instruments page.
+        {{ unpricedCount(s) === 1 ? 'it' : 'them' }}. Try Refresh quotes above.
       </p>
     </section>
 
@@ -232,6 +247,30 @@ onMounted(load)
 }
 .page-actions button {
   width: auto;
+}
+.refresh-log {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.refresh-log li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  flex-wrap: wrap;
+}
+.ticker {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #475569;
+  background: #e2e8f0;
+  border-radius: 4px;
+  padding: 1px 6px;
 }
 .currency-block {
   margin-bottom: 20px;

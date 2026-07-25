@@ -55,15 +55,17 @@ An instrument with no quote reports an *unknown* market value, not zero — the 
 
 ## Adding instruments
 
-Search on the Instruments page (admin) by stock number or company name — `2330`, `6488`, `TSLA`, `taiwan semiconductor` — and add a result in one click. The symbol, market, currency, name **and current price** all come from the price provider; there is nothing to type and nothing to mistype.
+In the trade form on the **Ledger** page, click *can't find it?* and search by stock number or company name — `2330`, `6488`, `TSLA`, `taiwan semiconductor` — and add a result in one click. The symbol, market, currency, name **and current price** all come from the price provider; there is nothing to type and nothing to mistype.
 
 **An instrument that cannot be priced cannot be added at all.** The quote is fetched as part of creating it, and a symbol the provider does not know is refused outright rather than sitting in the list looking normal until a quote fails to arrive weeks later. It also means a new instrument is priced immediately, so holdings can be valued as soon as a trade is recorded.
 
-Only TWSE, TPEX, NYSE and NASDAQ listings can be priced, so other exchanges, indices and futures are filtered out of results. The provider matches symbols and English names but **not Chinese** — search `2330`, not `台積電`. You can rename an instrument afterwards to whatever you like; the name is the one part of it this app owns rather than the provider.
+Only TWSE, TPEX, NYSE and NASDAQ listings can be priced, so other exchanges, indices and futures are filtered out of results. The provider matches symbols and English names but **not Chinese** — search `2330`, not `台積電`. Adding is open to any signed-in user — otherwise you could not record a trade in a stock nobody had entered yet. Renaming and deleting an instrument stay with admins and have no UI; they are API-only.
+
+There is no separate instruments page: an instrument exists only to be traded, so adding one lives in the trade form, and refreshing quotes lives on the Holdings page where the numbers it feeds are shown.
 
 ## Quotes
 
-Press **Refresh quotes** on the Holdings or Instruments page to pull current prices from Yahoo Finance. Taiwan listings are looked up as `2330.TW` / `6488.TWO` and US listings by their bare symbol — enter the bare symbol and pick the market; the suffix is added for you.
+Press **Refresh quotes** on the Holdings page to pull current prices from Yahoo Finance. Taiwan listings are looked up as `2330.TW` / `6488.TWO` and US listings by their bare symbol — enter the bare symbol and pick the market; the suffix is added for you.
 
 Any signed-in user can refresh: the holdings page is built on unrealized profit and loss, so making that an admin's job would leave everyone else stuck with a stale book. Quotes already checked within the last 15 minutes are left alone, and the endpoint is rate-limited, so an open button cannot turn into a flood of outbound calls. Setting a price *by hand* is still admin-only.
 
@@ -85,7 +87,9 @@ All routes are under `/api/v1`. Single resources return `{"data": ...}`, lists a
 | `GET` | `/instruments`, `/instruments/:id` | authenticated |
 | `POST` `PUT` `DELETE` | `/instruments`, `/instruments/:id` | admin |
 | `PATCH` | `/instruments/:id/price` | admin |
+| `POST` | `/instruments`, `GET /instruments/search` | authenticated, rate-limited |
 | `POST` | `/instruments/refresh-quotes` | authenticated, rate-limited 6/min |
+| `PUT` `DELETE` | `/instruments/:id` | admin (no UI) |
 | `GET` `POST` | `/transactions` | authenticated, own book only |
 | `GET` `PUT` `DELETE` | `/transactions/:id` | authenticated, own book only |
 | `GET` | `/positions`, `/positions/summary` | authenticated, own book only |
