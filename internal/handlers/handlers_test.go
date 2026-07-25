@@ -33,9 +33,9 @@ func setup(t *testing.T) *testEnv {
 	return setupWithFetcher(t, nil)
 }
 
-// setupWithFetcher wires a router whose instrument handler uses the given quote
-// provider. Tests pass a stub so the suite never reaches the network.
-func setupWithFetcher(t *testing.T, fetcher handlers.QuoteFetcher) *testEnv {
+// setupWithFetcher wires a router whose instrument handler uses the given market
+// data provider. Tests pass a stub so the suite never reaches the network.
+func setupWithFetcher(t *testing.T, provider handlers.QuoteProvider) *testEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	s, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -45,7 +45,7 @@ func setupWithFetcher(t *testing.T, fetcher handlers.QuoteFetcher) *testEnv {
 	t.Cleanup(func() { s.Close() })
 	am := auth.NewManager([]byte("test-secret"), time.Hour)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &testEnv{r: router.New(s, am, log, fetcher), s: s, am: am}
+	return &testEnv{r: router.New(s, am, log, provider), s: s, am: am}
 }
 
 // token creates a user with the given role and returns a bearer token for it.

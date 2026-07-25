@@ -214,3 +214,124 @@ func TestExchangeSuffixPrefersTheLongerMatch(t *testing.T) {
 		t.Errorf("got %q, want .TWO", got)
 	}
 }
+
+func TestFromTicker(t *testing.T) {
+	tests := []struct {
+		ticker, exchange string
+		wantSymbol       string
+		wantMarket       string
+		ok               bool
+	}{
+		// The provider names Taiwan listings with a suffix; the suffix belongs to
+		// the market here, so it is stripped back off.
+		{"2330.TW", "TAI", "2330", "TWSE", true},
+		{"6488.TWO", "TWO", "6488", "TPEX", true},
+		{"TSLA", "NMS", "TSLA", "NASDAQ", true},
+		{"TSM", "NYQ", "TSM", "NYSE", true},
+		{"tsla", "nms", "TSLA", "NASDAQ", true},
+		// Exchanges this system does not model are refused, not guessed at.
+		{"TL0.F", "FRA", "", "", false},
+		{"2330.HK", "HKG", "", "", false},
+		{"ANY", "", "", "", false},
+	}
+	for _, tc := range tests {
+		symbol, market, ok := FromTicker(tc.ticker, tc.exchange)
+		if symbol != tc.wantSymbol || market != tc.wantMarket || ok != tc.ok {
+			t.Errorf("FromTicker(%q, %q) = %q, %q, %v; want %q, %q, %v",
+				tc.ticker, tc.exchange, symbol, market, ok, tc.wantSymbol, tc.wantMarket, tc.ok)
+		}
+	}
+}
+
+// FromTicker must be the exact inverse of Ticker, or a symbol added from a
+// search result would be looked up under a name the provider does not use.
+func TestFromTickerRoundTripsWithTicker(t *testing.T) {
+	cases := []struct{ ticker, exchange string }{
+		{"2330.TW", "TAI"}, {"6488.TWO", "TWO"}, {"TSLA", "NMS"}, {"TSM", "NYQ"},
+	}
+	for _, tc := range cases {
+		symbol, market, ok := FromTicker(tc.ticker, tc.exchange)
+		if !ok {
+			t.Fatalf("FromTicker(%q, %q) failed", tc.ticker, tc.exchange)
+		}
+		back, ok := Ticker(symbol, market)
+		if !ok || back != tc.ticker {
+			t.Errorf("round trip of %q gave %q, want the original", tc.ticker, back)
+		}
+	}
+}
+
+const searchBody = `{"quotes":[
+	{"symbol":"TSLA","exchange":"NMS","quoteType":"EQUITY","shortname":"Tesla, Inc.","longname":"Tesla, Inc."},
+	{"symbol":"TL0.F","exchange":"FRA","quoteType":"EQUITY","shortname":"Tesla Inc."},
+	{"symbol":"TSLT","exchange":"BTS","quoteType":"ETF","shortname":"T-REX 2X Long Tesla"},
+	{"symbol":"2330.TW","exchange":"TAI","quoteType":"EQUITY","shortname":"TSMC","longname":"Taiwan Semiconductor Manufacturing"},
+	{"symbol":"^SOX","exchange":"SNP","quoteType":"INDEX","shortname":"PHLX Semiconductor"}
+]}`
+
+func TestSearchKeepsOnlyWhatCanBeModelled(t *testing.T) {
+	c := serve(t, http.StatusOK, searchBody)
+
+	results, err := c.Search(context.Background(), "tesla")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// A foreign listing (FRA), an ETF on an unmodelled exchange (BTS) and an
+	// index are all dropped: offering a row that cannot be added would be worse
+	// than not offering it.
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2: %+v", len(results), results)
+	}
+
+	tsla := results[0]
+	if tsla.Symbol != "TSLA" || tsla.Market != "NASDAQ" || tsla.Currency != models.CurrencyUSD {
+		t.Errorf("TSLA = %+v", tsla)
+	}
+	if tsla.Name != "Tesla, Inc." {
+		t.Errorf("name = %q, want the long name", tsla.Name)
+	}
+
+	tsmc := results[1]
+	// The stored symbol is bare; the provider's ticker is kept only for display.
+	if tsmc.Symbol != "2330" || tsmc.Ticker != "2330.TW" {
+		t.Errorf("2330 symbol = %q ticker = %q", tsmc.Symbol, tsmc.Ticker)
+	}
+	if tsmc.Market != "TWSE" || tsmc.Currency != models.CurrencyTWD {
+		t.Errorf("2330 market = %q currency = %q", tsmc.Market, tsmc.Currency)
+	}
+	if tsmc.Name != "Taiwan Semiconductor Manufacturing" {
+		t.Errorf("name = %q, want the long name", tsmc.Name)
+	}
+}
+
+func TestSearchFallsBackToTheShortName(t *testing.T) {
+	const body = `{"quotes":[{"symbol":"TSLT","exchange":"NMS","quoteType":"ETF","shortname":"T-REX 2X Long Tesla"}]}`
+	c := serve(t, http.StatusOK, body)
+
+	results, err := c.Search(context.Background(), "tesla")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].Name != "T-REX 2X Long Tesla" {
+		t.Errorf("got %+v, want the short name used", results)
+	}
+}
+
+func TestSearchIgnoresABlankQuery(t *testing.T) {
+	// No stub is needed: a blank query must not reach the provider at all.
+	c := newTestClient("http://127.0.0.1:1")
+
+	results, err := c.Search(context.Background(), "   ")
+	if err != nil || results != nil {
+		t.Errorf("got %v, %v; want no results and no error", results, err)
+	}
+}
+
+func TestSearchReportsAProviderFailure(t *testing.T) {
+	c := serve(t, http.StatusTooManyRequests, `{}`)
+
+	_, err := c.Search(context.Background(), "tesla")
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Errorf("error %v should carry the provider's status", err)
+	}
+}

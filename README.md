@@ -51,6 +51,14 @@ An instrument with no quote reports an *unknown* market value, not zero — the 
 
 **Currencies are tracked, never converted.** An instrument is denominated in TWD or USD, and the portfolio summary comes back as one total per currency rather than a single figure — there is no exchange rate in this system, and inventing one would be worse than showing two numbers. A currency is locked once trades exist against the instrument.
 
+## Adding instruments
+
+Use **Find an Instrument** on the Instruments page (admin): search by stock number or company name — `2330`, `6488`, `TSLA`, `taiwan semiconductor` — and add a result in one click. The symbol, market and currency come from the price provider, so what you add is guaranteed to be quotable.
+
+This matters because a hand-typed symbol has no such guarantee, and the mistake only shows up later as a quote that never arrives. Enter the bare stock number, never the provider's suffixed form: `2330`, not `2330.TW`.
+
+Only TWSE, TPEX, NYSE and NASDAQ listings are offered; other exchanges, indices and futures are filtered out. The provider matches symbols and English names but **not Chinese** — search `2330` or `taiwan semiconductor`, not `台積電`. A manual form is still there for anything not listed.
+
 ## Quotes
 
 Press **Refresh quotes** on the Holdings or Instruments page to pull current prices from Yahoo Finance. Taiwan listings are looked up as `2330.TW` / `6488.TWO` and US listings by their bare symbol — enter the bare symbol and pick the market; the suffix is added for you.

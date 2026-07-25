@@ -18,22 +18,23 @@ import (
 	"stockbook/internal/quotes"
 )
 
-// QuoteFetcher is the slice of a quote provider this handler needs. Keeping it
-// an interface lets the tests drive the refresh endpoint without a network call,
-// and makes swapping providers a one-file change.
-type QuoteFetcher interface {
+// QuoteProvider is the slice of a market-data provider this handler needs.
+// Keeping it an interface lets the tests drive both endpoints without a network
+// call, and makes swapping providers a one-file change.
+type QuoteProvider interface {
 	Fetch(ctx context.Context, ticker string) (quotes.Quote, error)
+	Search(ctx context.Context, query string) ([]quotes.SearchResult, error)
 }
 
 // InstrumentHandler handles the instrument master data.
 type InstrumentHandler struct {
 	db     *db.DB
-	quotes QuoteFetcher
+	quotes QuoteProvider
 }
 
 // NewInstrumentHandler creates an InstrumentHandler. quotes may be nil, in which
 // case the refresh endpoint reports that quote fetching is not configured.
-func NewInstrumentHandler(s *db.DB, q QuoteFetcher) *InstrumentHandler {
+func NewInstrumentHandler(s *db.DB, q QuoteProvider) *InstrumentHandler {
 	return &InstrumentHandler{db: s, quotes: q}
 }
 
@@ -222,6 +223,79 @@ func (h *InstrumentHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// searchCandidate is one instrument the provider knows about, shaped for the
+// admin's pick-and-add flow. Symbol, Market and Currency are already the values
+// that would be stored, so adding one is a single click with nothing typed —
+// and nothing that can be mistyped.
+//
+// Exists reports whether the master data already holds this symbol, so a
+// duplicate is visible before it is attempted rather than as a 409 afterwards.
+type searchCandidate struct {
+	Symbol   string          `json:"symbol"`
+	Name     string          `json:"name"`
+	Market   string          `json:"market"`
+	Currency models.Currency `json:"currency"`
+	Ticker   string          `json:"ticker"`
+	Exists   bool            `json:"exists"`
+}
+
+// searchTimeout bounds a single lookup against the provider.
+const searchTimeout = 10 * time.Second
+
+// Search handles GET /api/v1/instruments/search?q= (admin only). It asks the
+// provider for instruments matching a symbol or name and returns the ones this
+// system can model, pre-translated into the symbol/market/currency that would be
+// stored.
+//
+// This exists because typing instruments in by hand is both tedious and the
+// main source of unquotable entries: a symbol invented at the keyboard has no
+// guarantee the provider knows it, and the mistake only surfaces later as a
+// quote that never arrives. A symbol chosen from the provider's own answer is
+// quotable by construction.
+//
+// The provider matches on symbols and English names; a query in Chinese returns
+// nothing, which is a limitation of the source rather than of this endpoint.
+func (h *InstrumentHandler) Search(c *gin.Context) {
+	if h.quotes == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quote lookup is not configured"})
+		return
+	}
+	query := strings.TrimSpace(c.Query("q"))
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "q must not be blank"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), searchTimeout)
+	defer cancel()
+
+	found, err := h.quotes.Search(ctx, query)
+	if err != nil {
+		// The provider's own wording again: a caller can act on "returned 429"
+		// in a way they cannot act on "search failed".
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	candidates := make([]searchCandidate, 0, len(found))
+	for _, r := range found {
+		_, err := h.db.GetInstrumentBySymbol(r.Symbol)
+		if err != nil && !errors.Is(err, db.ErrNotFound) {
+			respondDBError(c, err)
+			return
+		}
+		candidates = append(candidates, searchCandidate{
+			Symbol:   r.Symbol,
+			Name:     r.Name,
+			Market:   r.Market,
+			Currency: r.Currency,
+			Ticker:   r.Ticker,
+			Exists:   err == nil,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": candidates})
 }
 
 // refreshResult reports what happened to one instrument during a quote refresh.

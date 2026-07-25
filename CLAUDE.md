@@ -80,7 +80,13 @@ An instrument's `LastPrice` is a `*int64` maintained by hand; nil means no quote
 
 `internal/quotes` fetches prices from Yahoo Finance's undocumented chart endpoint (no API key, no official support — it has broken before). `quotes.Ticker` maps `(symbol, market)` to the ticker Yahoo knows: `.TW` for TWSE, `.TWO` for TPEX, bare for NYSE/NASDAQ, and nothing for `OTHER`. Nothing outside that package knows where prices come from, so replacing the provider is a one-file job.
 
-`POST /api/v1/instruments/refresh-quotes` drives it. It is a deliberate, caller-triggered action rather than a background ticker, because **a background job has nowhere to return errors to** — a failed symbol would land in a log nobody reads. The endpoint returns 200 with a per-instrument result (`updated` / `skipped` / `failed`), each failure carrying **the provider's own wording** ("No data found, symbol may be delisted"), which is the only actionable diagnostic for a bad ticker. A partial failure is not an error for the run: one delisted symbol must not stop the other twenty from updating. To schedule it, point cron at the endpoint.
+**Finding instruments.** `GET /api/v1/instruments/search?q=` (admin, rate-limited 30/min) proxies the provider's search and returns only candidates this system can model, pre-translated into the symbol, market and currency that would be stored, plus an `exists` flag for symbols already in the master data. `quotes.FromTicker` is the exact inverse of `quotes.Ticker` — a `TAI` result named `2330.TW` becomes symbol `2330` on `TWSE` — and `TestFromTickerRoundTripsWithTicker` pins that correspondence down, because a symbol stored from a search result that did not round-trip would be looked up under a name the provider does not use. Results on unmodelled exchanges (FRA, HKG, JPX…) and non-holdable types (indices, futures) are dropped rather than offered as rows that cannot be added.
+
+This is the intended way to add an instrument, and it exists because a hand-typed symbol has no guarantee the provider knows it: the mistake surfaces much later as a quote that never arrives, which is the failure mode both `ExchangeSuffix` validation and the ticker-in-the-error message were added to soften. A symbol chosen from the provider's own answer is quotable by construction. The manual create form remains for anything the provider does not list.
+
+The provider matches symbols and English names only — a query in Chinese returns nothing, which is a limit of the source rather than the endpoint.
+
+`POST /api/v1/instruments/refresh-quotes` drives quote refreshing. It is a deliberate, caller-triggered action rather than a background ticker, because **a background job has nowhere to return errors to** — a failed symbol would land in a log nobody reads. The endpoint returns 200 with a per-instrument result (`updated` / `skipped` / `failed`), each failure carrying **the provider's own wording** ("No data found, symbol may be delisted"), which is the only actionable diagnostic for a bad ticker. A partial failure is not an error for the run: one delisted symbol must not stop the other twenty from updating. To schedule it, point cron at the endpoint.
 
 **It is open to any authenticated user, not just admins.** The holdings page exists to show unrealized profit and loss, which is dead without a current price; gating refresh behind an admin would leave every other user unable to do anything about a stale book, and a market price is shared objective data rather than something a caller owns. Two things keep an open endpoint from becoming a way to hammer a third party: instruments checked within `quoteFreshness` (15 minutes) are skipped entirely, so pressing refresh twice costs one round of traffic, and the route carries `middleware.RateLimit(6, time.Minute)`. Skipped-as-current instruments are counted in `fresh` but deliberately left out of `results` — on a repeat press they would be the whole list and none of them is actionable. Setting a price *by hand* (`PATCH /:id/price`) remains admin-only, as does everything else about the master data.
 
@@ -106,7 +112,7 @@ Stored quotes carry the **market timestamp the provider reported**, not the mome
 | Routes | Access |
 |---|---|
 | `GET /instruments`, `GET /instruments/:id` | any authenticated user (needed to enter a trade) |
-| `POST/PUT/DELETE /instruments/:id`, `PATCH /instruments/:id/price` | admin |
+| `POST/PUT/DELETE /instruments/:id`, `PATCH /instruments/:id/price`, `GET /instruments/search` | admin |
 | `POST /instruments/refresh-quotes` | any authenticated user, rate-limited 6/min per IP |
 | `/transactions/*`, `/positions/*` | any authenticated user, **scoped to themselves** |
 | `/users/*` | admin |

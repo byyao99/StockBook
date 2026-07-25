@@ -5,7 +5,7 @@ import { formatCentsOrUnknown, fromCents, toCents } from '../money'
 import { isAdmin } from '../session'
 import PaginationBar from '../components/PaginationBar.vue'
 import { CURRENCIES, MARKETS } from '../types'
-import type { Currency, Instrument, RefreshResult } from '../types'
+import type { Currency, Instrument, InstrumentCandidate, RefreshResult } from '../types'
 
 const PAGE_SIZE = 20
 
@@ -26,6 +26,60 @@ const form = reactive<{ symbol: string; name: string; market: string; currency: 
   market: 'TWSE',
   currency: 'TWD',
 })
+
+// Looking an instrument up with the provider and adding it in one click. This
+// is the primary way to add an instrument: a symbol typed by hand has no
+// guarantee the provider knows it, and the mistake only surfaces later as a
+// quote that never arrives. A symbol taken from the provider's own answer is
+// quotable by construction.
+const lookupQuery = ref('')
+const candidates = ref<InstrumentCandidate[]>([])
+const searching = ref(false)
+const searched = ref(false)
+
+async function lookup() {
+  const q = lookupQuery.value.trim()
+  if (!q) return
+  searching.value = true
+  searched.value = false
+  error.value = ''
+  success.value = ''
+  candidates.value = []
+  try {
+    candidates.value = await instrumentApi.search(q)
+    searched.value = true
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    searching.value = false
+  }
+}
+
+async function addCandidate(candidate: InstrumentCandidate) {
+  error.value = ''
+  success.value = ''
+  try {
+    await instrumentApi.create({
+      symbol: candidate.symbol,
+      name: candidate.name,
+      market: candidate.market,
+      currency: candidate.currency,
+    })
+    success.value = `Added ${candidate.symbol} — ${candidate.name}.`
+    // Mark it in place rather than re-searching, so the rest of the results
+    // stay put and several can be added in a row.
+    candidate.exists = true
+    await load()
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+function clearLookup() {
+  lookupQuery.value = ''
+  candidates.value = []
+  searched.value = false
+}
 
 // The outcome of the last quote refresh, kept so the per-symbol failures stay
 // on screen — a count alone would not say which ticker is wrong or why.
@@ -196,8 +250,54 @@ onMounted(load)
     <p v-if="error" class="error">{{ error }}</p>
     <p v-if="success" class="success">{{ success }}</p>
 
+    <section v-if="isAdmin && !editingId" class="card">
+      <h2 class="section-title">Find an Instrument</h2>
+      <p class="muted lookup-hint">
+        Search by symbol or company name and add it in one click — the symbol,
+        market and currency come from the price provider, so the result is
+        guaranteed to be quotable. Chinese names are not matched; use the stock
+        number or the English name.
+      </p>
+      <form class="lookup" @submit.prevent="lookup">
+        <input
+          v-model="lookupQuery"
+          type="search"
+          placeholder="e.g. 2330, 6488, TSLA, taiwan semiconductor"
+        />
+        <button type="submit" class="btn-primary" :disabled="searching">
+          {{ searching ? 'Searching…' : 'Search' }}
+        </button>
+        <button v-if="candidates.length > 0" type="button" class="btn-secondary" @click="clearLookup">
+          Clear
+        </button>
+      </form>
+
+      <p v-if="searched && candidates.length === 0" class="muted">
+        Nothing found that this app can track. Only TWSE, TPEX, NYSE and NASDAQ
+        listings are supported — other exchanges, indices and futures are left out.
+      </p>
+      <ul v-if="candidates.length > 0" class="candidates">
+        <li v-for="c in candidates" :key="c.ticker">
+          <div class="candidate-id">
+            <strong>{{ c.symbol }}</strong>
+            <span class="ticker">{{ c.ticker }}</span>
+          </div>
+          <div class="candidate-name">{{ c.name }}</div>
+          <div class="muted candidate-meta">{{ c.market }} · {{ c.currency }}</div>
+          <button v-if="c.exists" class="btn-secondary" disabled>Already added</button>
+          <button v-else class="btn-primary" @click="addCandidate(c)">Add</button>
+        </li>
+      </ul>
+    </section>
+
     <section v-if="isAdmin" class="card">
-      <h2 class="section-title">{{ editingId ? 'Edit Instrument' : 'New Instrument' }}</h2>
+      <h2 class="section-title">
+        {{ editingId ? 'Edit Instrument' : 'Add Manually' }}
+      </h2>
+      <p v-if="!editingId" class="muted lookup-hint">
+        For anything the provider does not list — an unlisted holding, or a
+        market this app does not fetch quotes for.
+      </p>
       <form @submit.prevent="submit">
         <div class="grid">
           <div class="field">
@@ -367,6 +467,55 @@ onMounted(load)
 .hint {
   font-size: 12px;
   margin-top: 12px;
+}
+.lookup {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.lookup input {
+  flex: 1;
+}
+.lookup button {
+  width: auto;
+  white-space: nowrap;
+}
+.lookup-hint {
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+.candidates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.candidates li {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid #f0f0f0;
+}
+.candidates button {
+  width: auto;
+}
+.candidate-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.candidate-name {
+  font-size: 14px;
+}
+.candidate-meta {
+  font-size: 12px;
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .candidates li {
+    grid-template-columns: 1fr auto;
+  }
 }
 .refresh-log {
   list-style: none;

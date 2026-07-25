@@ -20,9 +20,20 @@ import (
 // Quotes maps a Yahoo ticker to what the provider would say about it; anything
 // missing fails the way a delisted symbol does.
 type stubFetcher struct {
-	quotes map[string]quotes.Quote
-	fail   map[string]error
-	calls  []string
+	quotes    map[string]quotes.Quote
+	fail      map[string]error
+	calls     []string
+	results   []quotes.SearchResult
+	searchErr error
+}
+
+// Search returns whatever the test staged, so the pick-and-add flow can be
+// exercised without reaching the provider.
+func (s *stubFetcher) Search(_ context.Context, _ string) ([]quotes.SearchResult, error) {
+	if s.searchErr != nil {
+		return nil, s.searchErr
+	}
+	return s.results, nil
 }
 
 func (s *stubFetcher) Fetch(_ context.Context, ticker string) (quotes.Quote, error) {
@@ -432,5 +443,108 @@ func TestSymbolRejectsAPastedExchangeSuffix(t *testing.T) {
 		if rec.Code != http.StatusCreated {
 			t.Errorf("%s: got %d, want 201 (body: %s)", tc.symbol, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// searchCandidates fetches the search endpoint and decodes its payload.
+func (e *testEnv) search(t *testing.T, token, query string) ([]struct {
+	Symbol   string `json:"symbol"`
+	Name     string `json:"name"`
+	Market   string `json:"market"`
+	Currency string `json:"currency"`
+	Ticker   string `json:"ticker"`
+	Exists   bool   `json:"exists"`
+}, int) {
+	t.Helper()
+	rec := e.do(t, http.MethodGet, "/api/v1/instruments/search?q="+query, nil, token)
+	var out []struct {
+		Symbol   string `json:"symbol"`
+		Name     string `json:"name"`
+		Market   string `json:"market"`
+		Currency string `json:"currency"`
+		Ticker   string `json:"ticker"`
+		Exists   bool   `json:"exists"`
+	}
+	if rec.Code == http.StatusOK {
+		decodeData(t, rec, &out)
+	}
+	return out, rec.Code
+}
+
+func TestSearchRequiresAdmin(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{})
+
+	if _, code := e.search(t, "", "tesla"); code != http.StatusUnauthorized {
+		t.Errorf("no token: got %d, want 401", code)
+	}
+	user := e.token(t, "trader", models.RoleUser)
+	if _, code := e.search(t, user, "tesla"); code != http.StatusForbidden {
+		t.Errorf("user token: got %d, want 403", code)
+	}
+}
+
+// A candidate carries everything an add needs, so choosing one types nothing —
+// and a symbol taken from the provider's own answer is quotable by construction.
+func TestSearchReturnsReadyToAddCandidates(t *testing.T) {
+	fetcher := &stubFetcher{results: []quotes.SearchResult{
+		{Symbol: "TSLA", Name: "Tesla, Inc.", Market: "NASDAQ", Currency: models.CurrencyUSD, Ticker: "TSLA"},
+		{Symbol: "2330", Name: "TSMC", Market: "TWSE", Currency: models.CurrencyTWD, Ticker: "2330.TW"},
+	}}
+	e := setupWithFetcher(t, fetcher)
+	admin := e.token(t, "admin", models.RoleAdmin)
+
+	// One of them is already in the master data.
+	e.seedInstrumentIn(t, "2330", "TWSE", models.CurrencyTWD)
+
+	got, code := e.search(t, admin, "tesla")
+	if code != http.StatusOK {
+		t.Fatalf("got %d, want 200", code)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates, want 2", len(got))
+	}
+	if got[0].Symbol != "TSLA" || got[0].Market != "NASDAQ" || got[0].Currency != "USD" {
+		t.Errorf("TSLA candidate = %+v", got[0])
+	}
+	// Existing entries are flagged, so a duplicate is visible before it is
+	// attempted rather than arriving as a 409 afterwards.
+	if got[0].Exists {
+		t.Error("TSLA should not be marked as existing")
+	}
+	if !got[1].Exists {
+		t.Error("2330 is already in the master data and should be flagged")
+	}
+
+	// A candidate must be addable exactly as returned.
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments", map[string]any{
+		"symbol": got[0].Symbol, "name": got[0].Name,
+		"market": got[0].Market, "currency": got[0].Currency,
+	}, admin)
+	if rec.Code != http.StatusCreated {
+		t.Errorf("adding a candidate verbatim: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSearchRejectsABlankQuery(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{})
+	admin := e.token(t, "admin", models.RoleAdmin)
+
+	if _, code := e.search(t, admin, "%20%20"); code != http.StatusBadRequest {
+		t.Errorf("got %d, want 400", code)
+	}
+}
+
+// A provider outage is reported as such, with its own wording, rather than as
+// an empty result set that would read as "no such company".
+func TestSearchSurfacesAProviderFailure(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{searchErr: errors.New("quote provider returned 429 Too Many Requests")})
+	admin := e.token(t, "admin", models.RoleAdmin)
+
+	rec := e.do(t, http.MethodGet, "/api/v1/instruments/search?q=tesla", nil, admin)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("got %d, want 502 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "429") {
+		t.Errorf("body %s should carry the provider's wording", rec.Body.String())
 	}
 }

@@ -5,6 +5,7 @@ import type {
   AuthResponse,
   AuthUser,
   Instrument,
+  InstrumentCandidate,
   InstrumentInput,
   CurrencySummary,
   Position,
@@ -128,6 +129,11 @@ export const instrumentApi = {
     return requestPage<Instrument>(`/instruments${query}`)
   },
   get: (id: string) => request<Instrument>(`/instruments/${id}`),
+  // Looks a symbol or company name up with the market-data provider. Candidates
+  // come back with the symbol, market and currency already resolved, so adding
+  // one is a click rather than four fields of typing.
+  search: (q: string) =>
+    request<InstrumentCandidate[]>(`/instruments/search?q=${encodeURIComponent(q)}`),
   create: (input: InstrumentInput) =>
     request<Instrument>('/instruments', { method: 'POST', body: JSON.stringify(input) }),
   update: (id: string, input: InstrumentInput) =>

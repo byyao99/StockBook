@@ -150,6 +150,20 @@ export interface CurrencySummary {
   total_realized_pl: number
 }
 
+// A candidate returned by the instrument search, already carrying the exact
+// values that would be stored — so adding one types nothing and can mistype
+// nothing. `exists` flags a symbol already in the master data.
+export interface InstrumentCandidate {
+  symbol: string
+  name: string
+  market: string
+  currency: Currency
+  // The provider's own full ticker, shown so it is obvious which listing a
+  // result refers to when several exchanges carry the same number.
+  ticker: string
+  exists: boolean
+}
+
 // The outcome of one instrument in a quote refresh. `error` carries the
 // provider's own wording, which is the only actionable diagnostic for a symbol
 // that cannot be fetched.

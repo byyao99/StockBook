@@ -16,16 +16,16 @@ import (
 )
 
 // New builds and configures the Gin router. am signs and verifies bearer
-// tokens; log receives one structured record per request; fetcher supplies
-// market quotes and may be nil, in which case the refresh endpoint reports that
-// quote fetching is not configured.
-func New(s *db.DB, am *auth.Manager, log *slog.Logger, fetcher handlers.QuoteFetcher) *gin.Engine {
+// tokens; log receives one structured record per request; provider supplies
+// market data and may be nil, in which case the quote endpoints report that
+// quote lookup is not configured.
+func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuoteProvider) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RequestID(), middleware.Logger(log), gin.Recovery(), cors())
 
 	authH := handlers.NewAuthHandler(s, am)
 	user := handlers.NewUserHandler(s)
-	instrument := handlers.NewInstrumentHandler(s, fetcher)
+	instrument := handlers.NewInstrumentHandler(s, provider)
 	transaction := handlers.NewTransactionHandler(s)
 	position := handlers.NewPositionHandler(s)
 
@@ -67,6 +67,12 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, fetcher handlers.QuoteFet
 		{
 			i.GET("", instrument.List)
 			i.GET("/:id", instrument.Get)
+			// Looking a symbol up before adding it is what keeps the master data
+			// free of instruments the provider has never heard of. Admin-only
+			// like the create it feeds, and rate-limited because each call
+			// reaches the provider.
+			i.GET("/search", middleware.RequireRole(am, s, models.RoleAdmin),
+				middleware.RateLimit(30, time.Minute), instrument.Search)
 			i.POST("", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Create)
 			i.PUT("/:id", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Update)
 			i.PATCH("/:id/price", middleware.RequireRole(am, s, models.RoleAdmin), instrument.SetPrice)
