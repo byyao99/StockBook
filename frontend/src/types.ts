@@ -150,6 +150,9 @@ export interface CurrencySummary {
 export interface RefreshResult {
   instrument_id: string
   symbol: string
+  // The symbol the provider was actually asked for, derived from the market.
+  // A mis-filed market shows up here: 2330 on TPEX is looked up as 2330.TWO.
+  ticker?: string
   status: 'updated' | 'skipped' | 'failed'
   last_price?: number
   error?: string

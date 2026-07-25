@@ -258,6 +258,7 @@ onMounted(load)
             {{ r.status }}
           </span>
           <strong>{{ r.symbol }}</strong>
+          <span v-if="r.ticker" class="ticker">looked up as {{ r.ticker }}</span>
           <span class="muted">{{ r.error }}</span>
         </li>
       </ul>
@@ -376,6 +377,15 @@ onMounted(load)
   align-items: center;
   gap: 8px;
   padding: 3px 0;
+  flex-wrap: wrap;
+}
+.ticker {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #475569;
+  background: #e2e8f0;
+  border-radius: 4px;
+  padding: 1px 6px;
 }
 .table-wrap {
   overflow-x: auto;

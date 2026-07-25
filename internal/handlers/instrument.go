@@ -222,9 +222,14 @@ func (h *InstrumentHandler) Delete(c *gin.Context) {
 type refreshResult struct {
 	InstrumentID string `json:"instrument_id"`
 	Symbol       string `json:"symbol"`
-	Status       string `json:"status"` // updated | skipped | failed
-	LastPrice    *int64 `json:"last_price,omitempty"`
-	Error        string `json:"error,omitempty"`
+	// Ticker is the symbol the provider was actually asked for, which is
+	// derived from the instrument's market. Reporting it makes a mis-filed
+	// market self-evident: 2330 on TPEX is looked up as 2330.TWO and finds
+	// nothing, because it trades on TWSE as 2330.TW.
+	Ticker    string `json:"ticker,omitempty"`
+	Status    string `json:"status"` // updated | skipped | failed
+	LastPrice *int64 `json:"last_price,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // refreshTimeout bounds a whole refresh run, however many instruments it covers.
@@ -295,6 +300,7 @@ func (h *InstrumentHandler) refreshOne(ctx context.Context, item models.Instrume
 		result.Error = "no quote source for market " + item.Market
 		return result
 	}
+	result.Ticker = ticker
 
 	quote, err := h.quotes.Fetch(ctx, ticker)
 	if err != nil {

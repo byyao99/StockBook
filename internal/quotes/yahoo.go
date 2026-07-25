@@ -125,12 +125,18 @@ func (c *Client) Fetch(ctx context.Context, ticker string) (Quote, error) {
 
 	// Yahoo reports a missing symbol as a 404 whose body still explains why, so
 	// check the payload's error before falling back to the status code.
+	//
+	// The ticker is named in the message because it is derived from the
+	// instrument's market, and a wrong market is the most common cause of a
+	// lookup failing: "no quote for 2330.TWO" tells an operator that the symbol
+	// was filed under TPEX when it trades on TWSE, which "symbol may be
+	// delisted" on its own does not.
 	if body.Chart.Error != nil {
 		desc := strings.TrimSpace(body.Chart.Error.Description)
 		if desc == "" {
 			desc = body.Chart.Error.Code
 		}
-		return Quote{}, fmt.Errorf("%w: %s", ErrNoQuote, desc)
+		return Quote{}, fmt.Errorf("%w for %s: %s", ErrNoQuote, ticker, desc)
 	}
 	if res.StatusCode != http.StatusOK {
 		return Quote{}, fmt.Errorf("quote provider returned %s", res.Status)

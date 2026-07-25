@@ -104,6 +104,25 @@ func TestFetchSurfacesTheProvidersOwnMessage(t *testing.T) {
 	if !strings.Contains(err.Error(), "symbol may be delisted") {
 		t.Errorf("error %q should carry the provider's description", err)
 	}
+	// The ticker must be named too: a wrong market is the usual cause, and
+	// seeing "2330.TWO" is what reveals it.
+	if !strings.Contains(err.Error(), "BOGUS") {
+		t.Errorf("error %q should name the ticker that was looked up", err)
+	}
+}
+
+// The ticker in the message is what makes a mis-filed market diagnosable: a
+// TWSE-listed symbol recorded as TPEX is looked up with the wrong suffix, and
+// the provider can only report that as a missing symbol.
+func TestFetchNamesTheTickerItLookedUp(t *testing.T) {
+	const body = `{"chart":{"result":null,"error":{"code":"Not Found",
+		"description":"No data found, symbol may be delisted"}}}`
+	c := serve(t, http.StatusNotFound, body)
+
+	_, err := c.Fetch(context.Background(), "2330.TWO")
+	if err == nil || !strings.Contains(err.Error(), "2330.TWO") {
+		t.Errorf("error %v should name 2330.TWO so the wrong market is obvious", err)
+	}
 }
 
 // An error object with no description still has to say something.
