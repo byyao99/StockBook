@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { instrumentApi, transactionApi } from '../api/client'
-import { formatCents, formatQty, fromCents, toCents } from '../money'
+import { formatCents, formatQty, formatSignedOrUnknown, fromCents, toCents } from '../money'
 import PaginationBar from '../components/PaginationBar.vue'
 import InstrumentPicker from '../components/InstrumentPicker.vue'
 import { SIDES } from '../types'
@@ -46,12 +46,19 @@ function today(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+const isDividend = computed(() => form.side === 'dividend')
+
 // A preview of the cash movement, computed the same way the server will. It is
 // shown for the user's benefit only — the stored figure is always the server's.
 const netPreview = computed(() => {
   const gross = form.quantity * toCents(form.priceDollars)
   const fee = toCents(form.feeDollars)
-  return form.side === 'sell' ? gross - fee : gross + fee
+  return form.side === 'buy' ? gross + fee : gross - fee
+})
+
+const previewLabel = computed(() => {
+  if (form.side === 'buy') return 'Total cost'
+  return isDividend.value ? 'Payout received' : 'Proceeds'
 })
 
 // The currency of whichever instrument the form is pointed at, so amounts are
@@ -100,6 +107,18 @@ async function loadInstruments() {
 function changePage(newOffset: number) {
   offset.value = newOffset
   load()
+}
+
+/** The badge colour for an entry kind. A dividend is neither a buy nor a sell. */
+function sideBadge(side: TransactionSide): string {
+  if (side === 'buy') return 'badge-buy'
+  return side === 'sell' ? 'badge-sell' : 'badge-dividend'
+}
+
+/** Picks the gain/loss class, or nothing at all when there is no result. */
+function plClass(value: number | null): string {
+  if (value === null) return 'muted'
+  return value < 0 ? 'loss' : 'gain'
 }
 
 // Changing a filter restarts paging from the first page.
@@ -218,20 +237,28 @@ onMounted(async () => {
               <option v-for="s in SIDES" :key="s" :value="s">{{ s }}</option>
             </select>
           </div>
+          <!-- A dividend uses the same three numbers as a trade, but they mean
+               different things: the shares it was paid on, the amount per share,
+               and the tax withheld. Relabelling is what makes one form serve
+               both without a second, near-identical one. -->
           <div class="field">
-            <label>Shares</label>
+            <label>{{ isDividend ? 'Shares held' : 'Shares' }}</label>
             <input v-model.number="form.quantity" type="number" min="1" step="1" required />
           </div>
           <div class="field">
-            <label>Price ({{ formCurrency ?? '—' }})</label>
+            <label>
+              {{ isDividend ? 'Per share' : 'Price' }} ({{ formCurrency ?? '—' }})
+            </label>
             <input v-model.number="form.priceDollars" type="number" min="0" step="0.01" required />
           </div>
           <div class="field">
-            <label>Fees &amp; tax ({{ formCurrency ?? '—' }})</label>
+            <label>
+              {{ isDividend ? 'Tax withheld' : 'Fees &amp; tax' }} ({{ formCurrency ?? '—' }})
+            </label>
             <input v-model.number="form.feeDollars" type="number" min="0" step="0.01" />
           </div>
           <div class="field">
-            <label>Trade date</label>
+            <label>{{ isDividend ? 'Ex-dividend date' : 'Trade date' }}</label>
             <input v-model="form.tradedAt" type="date" :max="today()" required />
           </div>
         </div>
@@ -241,7 +268,7 @@ onMounted(async () => {
         </div>
 
         <p class="preview muted">
-          {{ form.side === 'sell' ? 'Proceeds' : 'Total cost' }}:
+          {{ previewLabel }}:
           <strong>{{ formatCents(netPreview, formCurrency) }}</strong>
           <span class="hint">(the server recomputes this; this is a preview)</span>
         </p>
@@ -266,7 +293,7 @@ onMounted(async () => {
             <option v-for="i in instruments" :key="i.id" :value="i.id">{{ i.symbol }}</option>
           </select>
           <select v-model="sideFilter" @change="applyFilter">
-            <option value="">Buys and sells</option>
+            <option value="">All entries</option>
             <option v-for="s in SIDES" :key="s" :value="s">{{ s }}</option>
           </select>
         </div>
@@ -285,6 +312,7 @@ onMounted(async () => {
               <th class="num">Price</th>
               <th class="num">Fees</th>
               <th class="num">Net</th>
+              <th class="num">Realized</th>
               <th></th>
             </tr>
           </thead>
@@ -296,14 +324,17 @@ onMounted(async () => {
                 <div v-if="t.note" class="muted">{{ t.note }}</div>
               </td>
               <td>
-                <span :class="['badge', t.side === 'buy' ? 'badge-buy' : 'badge-sell']">
-                  {{ t.side }}
-                </span>
+                <span :class="['badge', sideBadge(t.side)]">{{ t.side }}</span>
               </td>
               <td class="num">{{ formatQty(t.quantity) }}</td>
               <td class="num">{{ formatCents(t.price, currencyOf(t.instrument_id)) }}</td>
               <td class="num">{{ formatCents(t.fee, currencyOf(t.instrument_id)) }}</td>
               <td class="num">{{ formatCents(t.net_amount, currencyOf(t.instrument_id)) }}</td>
+              <!-- A buy has no realized result, so it shows the unknown marker
+                   rather than a zero that would read as a break-even trade. -->
+              <td class="num" :class="plClass(t.realized_pl)">
+                {{ formatSignedOrUnknown(t.realized_pl, currencyOf(t.instrument_id)) }}
+              </td>
               <td class="row-actions">
                 <button class="btn-secondary" @click="startEdit(t)">Edit</button>
                 <button class="btn-danger" @click="remove(t)">Delete</button>

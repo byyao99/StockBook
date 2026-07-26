@@ -1,6 +1,6 @@
 # StockBook
 
-A personal portfolio ledger. Record the trades you actually made; StockBook derives your holdings, moving-average cost, and realized/unrealized profit and loss.
+A personal portfolio ledger. Record the trades you actually made and the dividends you were paid; StockBook derives your holdings, moving-average cost, and realized/unrealized profit and loss.
 
 It is a book of record, not a trading system — there is no cash balance, no order matching, and no broker connection. Quotes are fetched from Yahoo Finance on demand, or entered by hand.
 
@@ -53,6 +53,24 @@ An instrument with no quote reports an *unknown* market value, not zero — the 
 
 **Currencies are tracked, never converted.** An instrument is denominated in TWD or USD, and the portfolio summary comes back as one total per currency rather than a single figure — there is no exchange rate in this system, and inventing one would be worse than showing two numbers. A currency is locked once trades exist against the instrument.
 
+## Dividends
+
+A cash dividend is recorded on the **Ledger** page like a trade — pick the stock, choose `dividend`, and enter the shares it was paid on, the amount per share, and any tax withheld. The form relabels itself; there is no separate screen.
+
+**A dividend is income, not a discount on what you paid.** It is banked in full and your cost basis does not move, so the shares you still hold keep showing the gain they actually have. (Deducting the payout from the cost basis is the US convention for a return of capital; applying it to an ordinary Taiwanese cash dividend would quietly flatter every holding that pays one.)
+
+Nothing checks the dividend against the shares you hold *today*, on purpose: a payout is earned on the ex-dividend date but arrives weeks later, by which time you may have sold, and refusing that entry would decline to record money you were really paid.
+
+Stock dividends and splits are not supported — they change historical share counts, which is a much larger change. Dividends are also not fetched automatically yet, though the price provider does publish them.
+
+## Realized results
+
+The **Realized** page answers what you actually banked, and over which period. Pick a year (or any two dates) and it reports the result broken down by holding — one block per currency, never a combined figure.
+
+**Trading and dividends are shown apart as well as together**, because they are taxed differently and because a year that lost money on price but made it back on income should not read as a flat one. The proceeds and cost sold describe the sales alone, so the return percentage is measured against the trading result: dividends are earned by holding shares, not by selling them.
+
+Each sale and each dividend carries its own result, shown in the ledger next to it, and those per-entry numbers are exactly what the report sums: they are a decomposition of the running total on the Holdings page, not a second calculation of it. Because moving-average cost is order-dependent, correcting or back-dating a trade rewrites the result of every sale after it — which is the point of deriving positions from the ledger rather than the other way round. A buy shows a dash rather than a zero: it realizes nothing, which is not the same as breaking even.
+
 ## Adding instruments
 
 There is no "add an instrument" step. The instrument field on the **Ledger** page is a search box: type a stock number or company name — `2330`, `6488`, `TSLA`, `nvidia` — and pick a result. Anything you have traded before appears instantly; anything else comes from the price provider and is added as you pick it, with its symbol, market, currency, name **and current price** all fetched for you.
@@ -93,6 +111,7 @@ All routes are under `/api/v1`. Single resources return `{"data": ...}`, lists a
 | `GET` `POST` | `/transactions` | authenticated, own book only |
 | `GET` `PUT` `DELETE` | `/transactions/:id` | authenticated, own book only |
 | `GET` | `/positions`, `/positions/summary` | authenticated, own book only |
+| `GET` | `/reports/realized?from=&to=` | authenticated, own book only |
 | `GET` `POST` `PUT` `DELETE` | `/users`, `/users/:id/...` | admin |
 
 A ledger is private even from admins: an admin manages instruments and accounts, not other people's holdings. Another user's transaction returns 404, not 403.

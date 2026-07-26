@@ -37,6 +37,10 @@ type PositionState struct {
 // exactly costBasis when q == quantity — so a full exit always leaves CostBasis
 // at exactly 0 with no residue. TestApplyFullExitLeavesNoResidue pins this down.
 //
+// A cash dividend banks its payout and moves nothing else:
+//
+//	realizedPL += q*price - fee
+//
 // Apply is pure: it returns a new state and never mutates the receiver.
 func (p PositionState) Apply(t Transaction) (PositionState, error) {
 	switch t.Side {
@@ -56,20 +60,33 @@ func (p PositionState) Apply(t Transaction) (PositionState, error) {
 		p.Quantity -= t.Quantity
 		return p, nil
 
+	case SideDividend:
+		// Income, banked whole: quantity and cost basis are untouched, so a
+		// payout cannot flatter the unrealized gain on shares still held.
+		//
+		// Deliberately not checked against the shares on hand. A dividend is
+		// earned on the ex-dividend date but lands weeks later, by which time
+		// the shares may have been sold, and refusing that entry would decline
+		// to record money that genuinely arrived. Nothing here runs out or goes
+		// negative, so there is no invariant needing the guard a sell requires.
+		p.RealizedPL += int64(t.Quantity)*t.Price - t.Fee
+		return p, nil
+
 	default:
 		return PositionState{}, errors.New("unknown transaction side: " + string(t.Side))
 	}
 }
 
 // NetAmount returns the cash movement a transaction represents, in cents: what a
-// buy costs (price plus fee) or what a sell yields (price minus fee). It is the
-// server's own arithmetic — client-supplied amounts are never trusted.
+// buy costs (price plus fee) or what a sell or dividend yields (price minus
+// fee). It is the server's own arithmetic — client-supplied amounts are never
+// trusted.
 func NetAmount(t Transaction) int64 {
 	gross := int64(t.Quantity) * t.Price
-	if t.Side == SideSell {
-		return gross - t.Fee
+	if t.Side == SideBuy {
+		return gross + t.Fee
 	}
-	return gross + t.Fee
+	return gross - t.Fee
 }
 
 // divRoundHalfUp divides a by b rounding halves away from zero, using integer

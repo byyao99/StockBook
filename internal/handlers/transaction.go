@@ -3,6 +3,7 @@ package handlers
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,19 @@ type TransactionHandler struct {
 // NewTransactionHandler creates a TransactionHandler.
 func NewTransactionHandler(s *db.DB) *TransactionHandler {
 	return &TransactionHandler{db: s}
+}
+
+// invalidSideMessage names every kind of entry a ledger accepts, so a caller who
+// gets it wrong is told what the alternatives are rather than just that this one
+// was refused.
+var invalidSideMessage = "side must be one of: " + joinSides(models.Sides)
+
+func joinSides(sides []models.TransactionSide) string {
+	names := make([]string, 0, len(sides))
+	for _, s := range sides {
+		names = append(names, string(s))
+	}
+	return strings.Join(names, ", ")
 }
 
 // transactionRequest is the payload for entering or editing a trade.
@@ -60,7 +74,7 @@ func (h *TransactionHandler) Create(c *gin.Context) {
 		return
 	}
 	if !req.Side.Valid() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "side must be buy or sell"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": invalidSideMessage})
 		return
 	}
 	tradedAt, err := resolveTradedAt(req.TradedAt)
@@ -99,17 +113,12 @@ func (h *TransactionHandler) List(c *gin.Context) {
 	if side := c.Query("side"); side != "" {
 		s := models.TransactionSide(side)
 		if !s.Valid() {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "side must be buy or sell"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": invalidSideMessage})
 			return
 		}
 		filter.Side = s
 	}
-	from, err := parseTimeQuery(c, "from")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	to, err := parseTimeQuery(c, "to")
+	from, to, err := parseDateRange(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -127,19 +136,50 @@ func (h *TransactionHandler) List(c *gin.Context) {
 	})
 }
 
+// parseDateRange reads the ?from and ?to bounds shared by the ledger list and
+// the reports. Either may be absent, which leaves that end open.
+//
+// A bare `to=YYYY-MM-DD` names the whole of that day, so it is stretched to the
+// last instant of it. A plain `traded_at <= 2026-12-31` would mean midnight and
+// silently drop every trade made on the closing day of the range — the last
+// entry of a yearly report being the one it omits.
+//
+// Bare dates are read as UTC, which is the same calendar the rest of the system
+// speaks: the trade form stores a chosen date at noon UTC precisely so that the
+// day a trade belongs to does not depend on the reader's zone, and the ledger
+// displays it by taking the first ten characters of the UTC timestamp.
+func parseDateRange(c *gin.Context) (*time.Time, *time.Time, error) {
+	from, _, err := parseTimeQuery(c, "from")
+	if err != nil {
+		return nil, nil, err
+	}
+	to, dateOnly, err := parseTimeQuery(c, "to")
+	if err != nil {
+		return nil, nil, err
+	}
+	if to != nil && dateOnly {
+		endOfDay := to.AddDate(0, 0, 1).Add(-time.Nanosecond)
+		to = &endOfDay
+	}
+	return from, to, nil
+}
+
 // parseTimeQuery reads an RFC 3339 timestamp or a bare date from query param
-// name. A missing param yields a nil time and no error.
-func parseTimeQuery(c *gin.Context, name string) (*time.Time, error) {
+// name. A missing param yields a nil time and no error. The second result
+// reports whether the value was a bare date, which callers treating a date as a
+// whole day need to know.
+func parseTimeQuery(c *gin.Context, name string) (*time.Time, bool, error) {
 	raw := c.Query(name)
 	if raw == "" {
-		return nil, nil
+		return nil, false, nil
 	}
-	for _, layout := range []string{time.RFC3339, time.DateOnly} {
-		if t, err := time.Parse(layout, raw); err == nil {
-			return &t, nil
-		}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return &t, false, nil
 	}
-	return nil, &validationError{name + " must be an RFC 3339 timestamp or a YYYY-MM-DD date"}
+	if t, err := time.Parse(time.DateOnly, raw); err == nil {
+		return &t, true, nil
+	}
+	return nil, false, &validationError{name + " must be an RFC 3339 timestamp or a YYYY-MM-DD date"}
 }
 
 // Get handles GET /api/v1/transactions/:id. Someone else's transaction reads as

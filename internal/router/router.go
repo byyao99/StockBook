@@ -29,6 +29,7 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 	instrument := handlers.NewInstrumentHandler(s, provider)
 	transaction := handlers.NewTransactionHandler(s)
 	position := handlers.NewPositionHandler(s)
+	report := handlers.NewReportHandler(s)
 
 	// Health check (also verifies the database connection).
 	//
@@ -121,6 +122,13 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 		{
 			p.GET("", position.List)
 			p.GET("/summary", position.Summary)
+		}
+
+		// Reports read the caller's own ledger and nobody else's, on exactly the
+		// same terms as the routes above.
+		rep := v1.Group("/reports", middleware.RequireAuth(am, s))
+		{
+			rep.GET("/realized", report.Realized)
 		}
 	}
 

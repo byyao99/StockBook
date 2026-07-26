@@ -5,6 +5,7 @@ package db
 
 import (
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/glebarez/sqlite"
@@ -124,6 +125,9 @@ func Open(dsn string) (*DB, error) {
 	if err := d.backfillCurrencies(); err != nil {
 		return nil, err
 	}
+	if err := d.backfillRealizedPL(); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
 
@@ -141,6 +145,56 @@ func (d *DB) backfillCurrencies() error {
 		currency := models.DefaultCurrencyForMarket(item.Market)
 		if err := d.db.Model(&models.Instrument{}).
 			Where("id = ?", item.ID).Update("currency", currency).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// backfillRealizedPL stamps realizing entries recorded before the column
+// existed. They are replayed holding by holding, because what a sell realized
+// depends on the entries before it and cannot be recovered from the row alone.
+//
+// Only holdings with an unstamped entry are touched, so this is a no-op on every
+// start after the first, and it writes nothing to the positions table — those
+// rows are already correct and this is a decomposition of them, not a
+// correction.
+//
+// A holding whose ledger no longer replays (a book left inconsistent by some
+// earlier bug) is logged and skipped rather than failing startup: its entries
+// stay unstamped, which the report counts and shows rather than quietly reading
+// as zero. Refusing to open the database over one bad holding would take the
+// whole application down for a problem confined to one symbol.
+func (d *DB) backfillRealizedPL() error {
+	type holding struct {
+		UserID       string
+		InstrumentID string
+	}
+	var stale []holding
+	if err := d.db.Model(&models.Transaction{}).
+		Where("side <> ? AND realized_pl IS NULL", models.SideBuy).
+		Distinct("user_id", "instrument_id").
+		Scan(&stale).Error; err != nil {
+		return err
+	}
+
+	for _, h := range stale {
+		err := d.db.Transaction(func(tx *gorm.DB) error {
+			_, entries, err := foldLedger(tx, h.UserID, h.InstrumentID)
+			if err != nil {
+				return err
+			}
+			return restampLedger(tx, entries)
+		})
+		if errors.Is(err, models.ErrInsufficientShares) {
+			slog.Warn("skipped realized P&L backfill for an inconsistent holding",
+				slog.String("user_id", h.UserID),
+				slog.String("instrument_id", h.InstrumentID),
+				slog.Any("error", err),
+			)
+			continue
+		}
+		if err != nil {
 			return err
 		}
 	}

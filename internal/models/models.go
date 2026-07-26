@@ -122,7 +122,7 @@ type Instrument struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
-// TransactionSide is the direction of a trade.
+// TransactionSide is what an entry does to a position.
 type TransactionSide string
 
 const (
@@ -130,11 +130,34 @@ const (
 	SideBuy TransactionSide = "buy"
 	// SideSell removes shares, realizes profit or loss, and releases cost.
 	SideSell TransactionSide = "sell"
+	// SideDividend banks a cash payout without moving shares or cost.
+	//
+	// It is income, not a refund of what the shares cost: the payout is
+	// realized in full and the cost basis is left alone. The alternative
+	// convention — deducting a dividend from the cost basis — is the one US tax
+	// treatment of a return of capital uses, and adopting it here would make an
+	// ordinary Taiwanese cash dividend quietly inflate the paper gain on shares
+	// still held instead of showing up as the income it is.
+	//
+	// Quantity is the shares the payout was made on and Price is the amount per
+	// share, matching how a dividend is announced, so the total is arrived at
+	// the same way as a trade's.
+	SideDividend TransactionSide = "dividend"
 )
+
+// Sides are the entry kinds a ledger accepts.
+var Sides = []TransactionSide{SideBuy, SideSell, SideDividend}
 
 // Valid reports whether s is a known side.
 func (s TransactionSide) Valid() bool {
-	return s == SideBuy || s == SideSell
+	return s == SideBuy || s == SideSell || s == SideDividend
+}
+
+// Realizes reports whether an entry of this kind banks a result of its own, and
+// therefore carries a RealizedPL stamp. A buy does not: it only moves cash into
+// a cost basis it may sit in for years.
+func (s TransactionSide) Realizes() bool {
+	return s == SideSell || s == SideDividend
 }
 
 // Transaction is one entry in a user's ledger: a buy or sell that already
@@ -145,6 +168,18 @@ func (s TransactionSide) Valid() bool {
 // rewrites history. Price and Fee are int64 cents; Quantity is whole shares.
 // NetAmount is computed by the server (never accepted from the client): the
 // cash that left the account on a buy, or arrived on a sell, fees included.
+//
+// RealizedPL is what this one entry banked: the step the fold took when it was
+// applied, which is proceeds minus the cost the sale released. It is a cache of
+// the ledger like Position is, restamped whenever the position is replayed, and
+// the whole point of storing it is that a fold's intermediate steps are
+// otherwise lost — Position.RealizedPL keeps only the running total, which
+// cannot answer "how did this year go?".
+//
+// It is a pointer because there are two distinct non-numbers here. A buy
+// realizes nothing, which is not the same as banking zero, and a row predating
+// the column has simply not been stamped yet. Both read as nil, and the report
+// counts unstamped sells rather than summing them in as zero.
 type Transaction struct {
 	ID           string          `gorm:"primaryKey" json:"id"`
 	UserID       string          `gorm:"index:idx_tx_user_instrument_time,priority:1" json:"user_id"`
@@ -155,6 +190,7 @@ type Transaction struct {
 	Price        int64           `json:"price"`
 	Fee          int64           `json:"fee"`
 	NetAmount    int64           `json:"net_amount"`
+	RealizedPL   *int64          `json:"realized_pl"`
 	TradedAt     time.Time       `gorm:"index:idx_tx_user_instrument_time,priority:3" json:"traded_at"`
 	Note         string          `json:"note"`
 	CreatedAt    time.Time       `json:"created_at"`

@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import PositionsView from '../views/PositionsView.vue'
 import TransactionsView from '../views/TransactionsView.vue'
+import ReportsView from '../views/ReportsView.vue'
 import UsersView from '../views/UsersView.vue'
 import AccountView from '../views/AccountView.vue'
 import LoginView from '../views/LoginView.vue'
@@ -20,6 +21,12 @@ export const router = createRouter({
       path: '/transactions',
       name: 'transactions',
       component: TransactionsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/reports',
+      name: 'reports',
+      component: ReportsView,
       meta: { requiresAuth: true },
     },
     {

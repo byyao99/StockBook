@@ -9,6 +9,7 @@ import type {
   InstrumentInput,
   CurrencySummary,
   Position,
+  RealizedSummary,
   RefreshReport,
   Role,
   Transaction,
@@ -186,4 +187,17 @@ export const positionApi = {
       `/positions${pageQuery(limit, offset)}${includeClosed ? '&include_closed=true' : ''}`,
     ),
   summary: () => request<CurrencySummary[]>('/positions/summary'),
+}
+
+export const reportApi = {
+  // What the caller banked between two dates, one entry per currency. Both
+  // bounds are YYYY-MM-DD and inclusive: the server stretches a bare `to` to the
+  // end of that day, so a year ends on 12-31 rather than the day before it.
+  realized: (from?: string, to?: string) => {
+    const params = new URLSearchParams()
+    if (from) params.set('from', from)
+    if (to) params.set('to', to)
+    const query = params.toString()
+    return request<RealizedSummary[]>(`/reports/realized${query ? `?${query}` : ''}`)
+  },
 }

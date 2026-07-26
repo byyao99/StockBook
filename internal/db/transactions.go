@@ -44,7 +44,13 @@ func (d *DB) CreateTransaction(t models.Transaction) (models.Transaction, error)
 		if err := tx.Create(&t).Error; err != nil {
 			return err
 		}
-		return syncPosition(tx, t.UserID, t.InstrumentID, &t)
+		if err := syncPosition(tx, t.UserID, t.InstrumentID, &t); err != nil {
+			return err
+		}
+		// Reload rather than mirror what syncPosition stamped: the entry may
+		// have been back-dated into the middle of history, in which case the
+		// value written is one the replay computed and not one this call has.
+		return tx.First(&t, "id = ?", t.ID).Error
 	})
 	if err != nil {
 		return models.Transaction{}, err
@@ -157,8 +163,9 @@ func (d *DB) UpdateTransaction(id, userID string, u TransactionUpdate) (models.T
 		if err := syncPosition(tx, userID, existing.InstrumentID, nil); err != nil {
 			return err
 		}
-		updated = existing
-		return nil
+		// The replay restamps this entry and every later sell, so the row is
+		// read back rather than assembled from what went in.
+		return tx.First(&updated, "id = ?", id).Error
 	})
 	if err != nil {
 		return models.Transaction{}, err
@@ -191,30 +198,96 @@ func (d *DB) DeleteTransaction(id, userID string) error {
 // definition of what a position means, and doubles as the oracle the tests check
 // the materialized rows against.
 func (d *DB) ReplayPosition(userID, instrumentID string) (models.PositionState, error) {
-	return replayPosition(d.db, userID, instrumentID)
+	state, _, err := foldLedger(d.db, userID, instrumentID)
+	return state, err
 }
 
-// replayPosition folds the ledger for (userID, instrumentID) in ledgerOrder.
-func replayPosition(tx *gorm.DB, userID, instrumentID string) (models.PositionState, error) {
+// ledgerEntry pairs a folded transaction with the realized profit or loss its
+// own step produced — the difference the entry made to the running total, which
+// the fold otherwise discards. It is nil for a buy, which realizes nothing.
+type ledgerEntry struct {
+	tx       models.Transaction
+	realized *int64
+}
+
+// foldLedger folds the ledger for (userID, instrumentID) in ledgerOrder,
+// returning the final state and what each entry contributed to it. The two
+// results come from one pass because they must: a per-entry number computed
+// against any prefix other than the one the fold actually walked would not sum
+// back to the total.
+func foldLedger(tx *gorm.DB, userID, instrumentID string) (models.PositionState, []ledgerEntry, error) {
 	var txs []models.Transaction
 	if err := tx.Where("user_id = ? AND instrument_id = ?", userID, instrumentID).
 		Order(ledgerOrder).Find(&txs).Error; err != nil {
-		return models.PositionState{}, err
+		return models.PositionState{}, nil, err
 	}
 
 	var state models.PositionState
+	entries := make([]ledgerEntry, 0, len(txs))
 	for _, t := range txs {
 		next, err := state.Apply(t)
 		if err != nil {
 			// Name the offending entry: after a delete or an edit this is the
 			// entry that no longer has enough shares behind it, which is the
 			// only actionable thing we can tell the user.
-			return models.PositionState{}, fmt.Errorf("%w: %s %d %s on %s",
+			return models.PositionState{}, nil, fmt.Errorf("%w: %s %d %s on %s",
 				err, t.Side, t.Quantity, t.Symbol, t.TradedAt.Format(time.DateOnly))
 		}
+		entries = append(entries, ledgerEntry{tx: t, realized: realizedStep(state, next, t)})
 		state = next
 	}
-	return state, nil
+	return state, entries, nil
+}
+
+// realizedStep is what one fold step banked: the movement in the running
+// realized total across a single Apply — a sale's profit or loss, or a
+// dividend's payout. Deriving it by subtraction rather than recomputing it from
+// quantity and price keeps models.PositionState.Apply the only place that
+// algebra lives — a second answer to "what did this entry earn?" would be free
+// to drift from the one maintaining the position.
+func realizedStep(before, after models.PositionState, t models.Transaction) *int64 {
+	if !t.Side.Realizes() {
+		return nil
+	}
+	step := after.RealizedPL - before.RealizedPL
+	return &step
+}
+
+// stampRealized writes one entry's realized profit or loss onto its row. The map
+// form is deliberate: a nil must reach the column as NULL rather than being
+// skipped as a zero value, which is how a buy keeps its "realized nothing".
+func stampRealized(tx *gorm.DB, id string, realized *int64) error {
+	return tx.Model(&models.Transaction{}).Where("id = ?", id).
+		Updates(map[string]any{"realized_pl": realized}).Error
+}
+
+// restampLedger brings every entry's stored stamp back in line with the fold it
+// came from, skipping rows already holding the right value.
+//
+// Restamping the whole ledger rather than just the edited row is not
+// thoroughness for its own sake: moving-average cost is order-dependent, so
+// changing one entry changes what every later sell released, and leaving those
+// rows alone would leave the report disagreeing with the position it is a
+// decomposition of.
+func restampLedger(tx *gorm.DB, entries []ledgerEntry) error {
+	for _, e := range entries {
+		if equalRealized(e.tx.RealizedPL, e.realized) {
+			continue
+		}
+		if err := stampRealized(tx, e.tx.ID, e.realized); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// equalRealized compares two stamps, treating nil as its own value rather than
+// as zero.
+func equalRealized(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // syncPosition brings the stored position for (userID, instrumentID) back in
@@ -227,7 +300,8 @@ func replayPosition(tx *gorm.DB, userID, instrumentID string) (models.PositionSt
 // incremental step would compute the wrong basis.
 //
 // Either way the write is a compare-and-swap against the values just read, so a
-// concurrent writer cannot be silently overwritten.
+// concurrent writer cannot be silently overwritten, and either way the entries
+// the fold walked are stamped with what they realized.
 func syncPosition(tx *gorm.DB, userID, instrumentID string, appended *models.Transaction) error {
 	current, found, err := loadPosition(tx, userID, instrumentID)
 	if err != nil {
@@ -245,17 +319,29 @@ func syncPosition(tx *gorm.DB, userID, instrumentID string, appended *models.Tra
 	}
 
 	if incremental {
-		state, err = models.PositionState{
+		before := models.PositionState{
 			Quantity:   current.Quantity,
 			CostBasis:  current.CostBasis,
 			RealizedPL: current.RealizedPL,
-		}.Apply(*appended)
+		}
+		state, err = before.Apply(*appended)
 		if err != nil {
 			return err
 		}
+		// The row was written a moment ago with no stamp, so only one that
+		// realized something needs writing; a buy is already correctly nil.
+		if stamp := realizedStep(before, state, *appended); stamp != nil {
+			if err := stampRealized(tx, appended.ID, stamp); err != nil {
+				return err
+			}
+		}
 	} else {
-		state, err = replayPosition(tx, userID, instrumentID)
+		var entries []ledgerEntry
+		state, entries, err = foldLedger(tx, userID, instrumentID)
 		if err != nil {
+			return err
+		}
+		if err := restampLedger(tx, entries); err != nil {
 			return err
 		}
 	}

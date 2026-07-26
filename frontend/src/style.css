@@ -149,6 +149,12 @@ th {
   background: #fee2e2;
   color: #991b1b;
 }
+/* A dividend is neither a buy nor a sell, so it gets its own colour instead of
+   borrowing one and reading as a trade at a glance. */
+.badge-dividend {
+  background: #e0e7ff;
+  color: #3730a3;
+}
 .badge-warn {
   background: #fef3c7;
   color: #92400e;

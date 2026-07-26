@@ -61,8 +61,10 @@ export interface InstrumentInput {
   market: string
 }
 
-export type TransactionSide = 'buy' | 'sell'
-export const SIDES: TransactionSide[] = ['buy', 'sell']
+// What an entry does to a position. A dividend banks a cash payout without
+// moving shares or cost: it is income, not a refund of what the shares cost.
+export type TransactionSide = 'buy' | 'sell' | 'dividend'
+export const SIDES: TransactionSide[] = ['buy', 'sell', 'dividend']
 
 // Transaction is one entry in the ledger. `symbol` is a snapshot taken when the
 // entry was made, so renaming an instrument never rewrites history.
@@ -77,6 +79,11 @@ export interface Transaction {
   fee: number
   // The cash movement, always computed by the server.
   net_amount: number
+  // What this one entry banked, as the ledger fold computed it. null on a buy,
+  // which realizes nothing — not the same as banking zero, so it renders as an
+  // em dash rather than as $0.00. A sell is null only when the server could not
+  // replay its holding, a case the realized report counts and shows.
+  realized_pl: number | null
   traded_at: string
   note: string
   created_at: string
@@ -148,6 +155,48 @@ export interface CurrencySummary {
   total_market_value: number
   total_unrealized_pl: number
   total_realized_pl: number
+}
+
+// RealizedRow is one instrument's realized result over a reporting period.
+//
+// The two sources are kept apart: `trading_pl` is what the sales banked and
+// `dividends` is what was paid out for holding the shares. `realized_pl` is
+// their sum. `proceeds` and `cost` describe the sales alone, so
+// trading_pl === proceeds - cost always holds — the identity is against
+// trading, never against the combined total.
+export interface RealizedRow {
+  instrument_id: string
+  symbol: string
+  name: string
+  market: string
+  currency: Currency
+  realized_pl: number
+  trading_pl: number
+  dividends: number
+  proceeds: number
+  cost: number
+  sells: number
+  dividend_count: number
+}
+
+// RealizedSummary totals one currency's realized result over the period. Like
+// CurrencySummary the API returns one per currency and never a grand total.
+//
+// `unstamped_entries` counts sales and dividends whose result the server could
+// not compute. They are excluded from the totals rather than counted as zero, so
+// a non-zero value means the period is not fully accounted for and the UI must
+// say so. It is normally 0.
+export interface RealizedSummary {
+  currency: Currency
+  realized_pl: number
+  trading_pl: number
+  dividends: number
+  proceeds: number
+  cost: number
+  sells: number
+  dividend_count: number
+  unstamped_entries: number
+  instruments: RealizedRow[]
 }
 
 // A candidate returned by the instrument search, already carrying the exact

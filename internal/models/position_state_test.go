@@ -14,6 +14,11 @@ func sell(qty int, price, fee int64) Transaction {
 	return Transaction{Side: SideSell, Quantity: qty, Price: price, Fee: fee}
 }
 
+// dividend pays perShare on qty shares, less any withholding in fee.
+func dividend(qty int, perShare, fee int64) Transaction {
+	return Transaction{Side: SideDividend, Quantity: qty, Price: perShare, Fee: fee}
+}
+
 // fold applies a whole sequence, failing the test on the first error.
 func fold(t *testing.T, txs ...Transaction) PositionState {
 	t.Helper()
@@ -140,6 +145,50 @@ func TestApplyPartialSellRoundsHalfUp(t *testing.T) {
 	}
 }
 
+// A cash dividend is income, not a refund of what the shares cost. Banking it
+// against the cost basis instead would leave the shares looking cheaper than
+// they were and quietly inflate the unrealized gain still showing on them.
+func TestApplyDividendIsIncomeNotCostReduction(t *testing.T) {
+	before := fold(t, buy(1000, 70000, 0))
+	after := fold(t, buy(1000, 70000, 0), dividend(1000, 500, 0))
+
+	if after.CostBasis != before.CostBasis {
+		t.Errorf("cost basis moved from %d to %d; a dividend must not touch it",
+			before.CostBasis, after.CostBasis)
+	}
+	if after.Quantity != before.Quantity {
+		t.Errorf("quantity moved from %d to %d", before.Quantity, after.Quantity)
+	}
+	if want := int64(1000 * 500); after.RealizedPL != want {
+		t.Errorf("realized = %d, want %d", after.RealizedPL, want)
+	}
+}
+
+// Withholding comes off the payout, exactly as a selling fee comes off proceeds.
+func TestApplyDividendWithholdingReducesIncome(t *testing.T) {
+	state := fold(t, buy(1000, 70000, 0), dividend(1000, 500, 10600))
+	if want := int64(1000*500 - 10600); state.RealizedPL != want {
+		t.Errorf("realized = %d, want %d", state.RealizedPL, want)
+	}
+}
+
+// A payout is earned on the ex-dividend date but arrives weeks later, by which
+// time the shares may be gone. Recording it must not require holding them —
+// unlike a sell, nothing here can run out.
+func TestApplyDividendAfterFullExit(t *testing.T) {
+	state := fold(t, buy(1000, 70000, 0), sell(1000, 90000, 0))
+	after, err := state.Apply(dividend(1000, 500, 0))
+	if err != nil {
+		t.Fatalf("dividend on sold shares: %v", err)
+	}
+	if after.Quantity != 0 || after.CostBasis != 0 {
+		t.Errorf("closed position moved: %+v", after)
+	}
+	if want := state.RealizedPL + 1000*500; after.RealizedPL != want {
+		t.Errorf("realized = %d, want %d", after.RealizedPL, want)
+	}
+}
+
 func TestApplyRejectsOversell(t *testing.T) {
 	state := fold(t, buy(10, 1000, 0))
 
@@ -173,6 +222,28 @@ func TestNetAmount(t *testing.T) {
 	}
 	if got := NetAmount(sell(100, 5000, 1425)); got != 498575 {
 		t.Errorf("sell net = %d, want 498575", got)
+	}
+	// A dividend is cash in, like a sell: the withholding comes off it.
+	if got := NetAmount(dividend(1000, 500, 10600)); got != 489400 {
+		t.Errorf("dividend net = %d, want 489400", got)
+	}
+}
+
+func TestSideValid(t *testing.T) {
+	for _, s := range Sides {
+		if !s.Valid() {
+			t.Errorf("%q should be valid", s)
+		}
+	}
+	if TransactionSide("split").Valid() {
+		t.Error("an unknown side should not be valid")
+	}
+	// Only entries that bank something carry a realized stamp.
+	if SideBuy.Realizes() {
+		t.Error("a buy realizes nothing")
+	}
+	if !SideSell.Realizes() || !SideDividend.Realizes() {
+		t.Error("sells and dividends both realize a result")
 	}
 }
 

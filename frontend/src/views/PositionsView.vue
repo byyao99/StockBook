@@ -166,7 +166,7 @@ onMounted(load)
           <strong class="stat-value" :class="plClass(s.total_realized_pl)">
             {{ formatSignedCents(s.total_realized_pl, s.currency) }}
           </strong>
-          <span class="muted stat-note">banked, all time</span>
+          <span class="muted stat-note">banked, all time — dividends included</span>
         </div>
       </div>
       <p v-if="unpricedCount(s) > 0" class="notice">
