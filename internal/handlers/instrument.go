@@ -134,12 +134,32 @@ func (h *InstrumentHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
+	// An index, a futures contract or a currency pair prices perfectly well and
+	// still cannot be owned as shares. That used to be refused only incidentally,
+	// because such things trade on venues the market mapping did not list; now
+	// that a US listing is accepted on whatever venue carries it, holdability is
+	// asked about directly.
+	if !quotes.IsHoldable(quote.Type) {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf(
+			"%s is a %s and cannot be held as shares", ticker, strings.ToLower(quote.Type))})
+		return
+	}
 	// Cross-check the listing actually reached: a symbol paired with the wrong
 	// market can still resolve to some other exchange's instrument, and adopting
 	// that silently would file a foreign listing under a local market.
 	if _, market, ok := quotes.FromTicker(ticker, quote.Exchange); !ok || market != req.Market {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf(
 			"%s resolves to a %s listing, not %s", ticker, quote.Exchange, req.Market)})
+		return
+	}
+	// A US listing prices in dollars and a Taiwanese one in NT dollars. This is
+	// the check that catches a foreign listing the provider named without a
+	// suffix — the case the cross-check above cannot see, because it reads a
+	// bare ticker as a US one by design.
+	if expected := models.DefaultCurrencyForMarket(req.Market); quote.Currency != expected {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf(
+			"%s is quoted in %s, which is not what a %s listing trades in",
+			ticker, quote.Currency, req.Market)})
 		return
 	}
 

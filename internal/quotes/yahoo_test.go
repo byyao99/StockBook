@@ -49,7 +49,8 @@ func serve(t *testing.T, status int, body string) *Client {
 }
 
 const tslaBody = `{"chart":{"result":[{"meta":{"symbol":"TSLA","currency":"USD",
-	"regularMarketPrice":313.03,"regularMarketTime":1784923201}}],"error":null}}`
+	"regularMarketPrice":313.03,"regularMarketTime":1784923201,
+	"exchangeName":"NMS","instrumentType":"EQUITY"}}],"error":null}}`
 
 const tsmcBody = `{"chart":{"result":[{"meta":{"symbol":"2330.TW","currency":"TWD",
 	"regularMarketPrice":2350.0,"regularMarketTime":1784871010}}],"error":null}}`
@@ -72,6 +73,25 @@ func TestFetchParsesAQuote(t *testing.T) {
 	// quote reads as stale rather than as freshly fetched.
 	if q.AsOf.Unix() != 1784923201 {
 		t.Errorf("as-of = %d, want the reported market time 1784923201", q.AsOf.Unix())
+	}
+	// The exchange and kind come back with the price so one fetch is enough to
+	// decide whether the instrument can be filed at all.
+	if q.Exchange != "NMS" || q.Type != "EQUITY" {
+		t.Errorf("exchange = %q type = %q, want NMS and EQUITY", q.Exchange, q.Type)
+	}
+}
+
+func TestIsHoldable(t *testing.T) {
+	for _, kind := range []string{"EQUITY", "ETF", "etf", ""} {
+		if !IsHoldable(kind) {
+			t.Errorf("%q should be holdable", kind)
+		}
+	}
+	// These price perfectly well and still cannot be owned as shares.
+	for _, kind := range []string{"INDEX", "FUTURE", "CRYPTOCURRENCY", "MUTUALFUND", "CURRENCY"} {
+		if IsHoldable(kind) {
+			t.Errorf("%q should not be holdable", kind)
+		}
 	}
 }
 
@@ -229,10 +249,29 @@ func TestFromTicker(t *testing.T) {
 		{"TSLA", "NMS", "TSLA", "NASDAQ", true},
 		{"TSM", "NYQ", "TSM", "NYSE", true},
 		{"tsla", "nms", "TSLA", "NASDAQ", true},
-		// Exchanges this system does not model are refused, not guessed at.
+		// A bare ticker is a US listing whichever venue carries it, so the
+		// venues that are not enumerated anywhere still resolve. These four are
+		// the ones that used to vanish: NYSE Arca, Cboe and NYSE American carry
+		// most US ETFs between them.
+		{"VOO", "PCX", "VOO", "NYSE", true},   // NYSE Arca
+		{"ARKK", "BTS", "ARKK", "NYSE", true}, // Cboe US
+		{"IMO", "ASE", "IMO", "NYSE", true},   // NYSE American
+		{"WHATEVER", "XYZ", "WHATEVER", "NYSE", true},
+		// A ticker whose suffix is not one this package appends belongs to a
+		// venue that cannot be addressed: looked up bare it would resolve to a
+		// different security, or to nothing at all.
 		{"TL0.F", "FRA", "", "", false},
 		{"2330.HK", "HKG", "", "", false},
+		{"VTI.MX", "MEX", "", "", false},
+		// A suffix that contradicts the exchange reported with it. Believing the
+		// exchange would file this so that every later fetch asks for 2330.TWO,
+		// which does not exist.
+		{"2330.TW", "TWO", "", "", false},
+		{"6488.TWO", "TAI", "", "", false},
+		// Nothing to go on.
 		{"ANY", "", "", "", false},
+		{"", "NMS", "", "", false},
+		{".TW", "TAI", "", "", false},
 	}
 	for _, tc := range tests {
 		symbol, market, ok := FromTicker(tc.ticker, tc.exchange)
@@ -248,6 +287,7 @@ func TestFromTicker(t *testing.T) {
 func TestFromTickerRoundTripsWithTicker(t *testing.T) {
 	cases := []struct{ ticker, exchange string }{
 		{"2330.TW", "TAI"}, {"6488.TWO", "TWO"}, {"TSLA", "NMS"}, {"TSM", "NYQ"},
+		{"VOO", "PCX"}, {"ARKK", "BTS"},
 	}
 	for _, tc := range cases {
 		symbol, market, ok := FromTicker(tc.ticker, tc.exchange)
@@ -276,11 +316,12 @@ func TestSearchKeepsOnlyWhatCanBeModelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	// A foreign listing (FRA), an ETF on an unmodelled exchange (BTS) and an
-	// index are all dropped: offering a row that cannot be added would be worse
-	// than not offering it.
-	if len(results) != 2 {
-		t.Fatalf("got %d results, want 2: %+v", len(results), results)
+	// The foreign listing (FRA) and the index are dropped: offering a row that
+	// cannot be added would be worse than not offering it. The Cboe-listed ETF
+	// is kept — a US listing is addressable whichever venue carries it, and
+	// dropping those is what hid every NYSE Arca ETF from search.
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3: %+v", len(results), results)
 	}
 
 	tsla := results[0]
@@ -291,7 +332,11 @@ func TestSearchKeepsOnlyWhatCanBeModelled(t *testing.T) {
 		t.Errorf("name = %q, want the long name", tsla.Name)
 	}
 
-	tsmc := results[1]
+	if tslt := results[1]; tslt.Symbol != "TSLT" || tslt.Market != "NYSE" {
+		t.Errorf("Cboe-listed ETF = %+v, want TSLT on NYSE", tslt)
+	}
+
+	tsmc := results[2]
 	// The stored symbol is bare; the provider's ticker is kept only for display.
 	if tsmc.Symbol != "2330" || tsmc.Ticker != "2330.TW" {
 		t.Errorf("2330 symbol = %q ticker = %q", tsmc.Symbol, tsmc.Ticker)

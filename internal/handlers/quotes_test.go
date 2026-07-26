@@ -75,6 +75,7 @@ func synthesizeQuote(ticker string) quotes.Quote {
 		AsOf:     time.Now(),
 		Name:     ticker + " Corp",
 		Exchange: exchange,
+		Type:     "EQUITY",
 	}
 }
 
@@ -400,6 +401,74 @@ func TestCreateRefusesAListingFromAnotherExchange(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "FRA") {
 		t.Errorf("body %s should name the exchange actually reached", rec.Body.String())
+	}
+}
+
+// Most US ETFs list on NYSE Arca, Cboe or NYSE American rather than on NYSE or
+// Nasdaq proper. Enumerating venues kept every one of them — VOO, SPY, VTI —
+// out of the system, so a US listing is now accepted on whatever venue carries
+// it: the ticker is bare either way, which is all pricing depends on.
+func TestCreateAcceptsAUSListingFromAnyVenue(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{quotes: map[string]quotes.Quote{
+		"VOO": {Price: 67914, Currency: models.CurrencyUSD, AsOf: time.Now(),
+			Name: "Vanguard S&P 500 ETF", Exchange: "PCX", Type: "ETF"},
+	}})
+	admin := e.token(t, "admin", models.RoleAdmin)
+
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments",
+		map[string]any{"symbol": "VOO", "market": "NYSE"}, admin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var created models.Instrument
+	decodeData(t, rec, &created)
+	if created.Symbol != "VOO" || created.Market != "NYSE" || created.Currency != models.CurrencyUSD {
+		t.Errorf("created %+v", created)
+	}
+	if created.LastPrice == nil || *created.LastPrice != 67914 {
+		t.Errorf("price %v, want it fetched at creation", created.LastPrice)
+	}
+}
+
+// An index prices perfectly well and cannot be owned. That used to be refused
+// only because indices trade on venues the market mapping did not list; with US
+// venues no longer enumerated, holdability is asked about directly.
+func TestCreateRefusesSomethingThatCannotBeHeld(t *testing.T) {
+	e := setupWithFetcher(t, &stubFetcher{quotes: map[string]quotes.Quote{
+		"SPX": {Price: 600000, Currency: models.CurrencyUSD, AsOf: time.Now(),
+			Name: "S&P 500", Exchange: "SNP", Type: "INDEX"},
+	}})
+	admin := e.token(t, "admin", models.RoleAdmin)
+
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments",
+		map[string]any{"symbol": "SPX", "market": "NYSE"}, admin)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("got %d, want 422 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "index") {
+		t.Errorf("body %s should say what the provider called it", rec.Body.String())
+	}
+}
+
+// The currency is the backstop for a foreign listing the provider happens to
+// name without a suffix: a bare ticker reads as a US one by design, so what it
+// trades in is the thing left that can contradict that.
+func TestCreateRefusesAListingInTheWrongCurrency(t *testing.T) {
+	// The exchange agrees with the market asked for, so the cross-check passes
+	// this through and the currency is the only thing left to catch it.
+	e := setupWithFetcher(t, &stubFetcher{quotes: map[string]quotes.Quote{
+		"TSM": {Price: 235000, Currency: models.CurrencyTWD, AsOf: time.Now(),
+			Name: "TSMC", Exchange: "NYQ", Type: "EQUITY"},
+	}})
+	admin := e.token(t, "admin", models.RoleAdmin)
+
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments",
+		map[string]any{"symbol": "TSM", "market": "NYSE"}, admin)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("got %d, want 422 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "TWD") {
+		t.Errorf("body %s should name the currency it was quoted in", rec.Body.String())
 	}
 }
 

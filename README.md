@@ -77,7 +77,7 @@ There is no "add an instrument" step. The instrument field on the **Ledger** pag
 
 **An instrument that cannot be priced cannot be added at all.** The quote is fetched as part of creating it, and a symbol the provider does not know is refused outright rather than sitting in the list looking normal until a quote fails to arrive weeks later. It also means a new instrument is priced immediately, so holdings can be valued as soon as a trade is recorded.
 
-Only TWSE, TPEX, NYSE and NASDAQ listings can be priced, so other exchanges, indices and futures are filtered out of results. The provider matches symbols and English names but **not Chinese** — search `2330`, not `台積電`. Adding is open to any signed-in user — otherwise you could not record a trade in a stock nobody had entered yet. Renaming and deleting an instrument stay with admins and have no UI; they are API-only.
+Taiwan and US listings can be priced; other countries' exchanges, along with indices, futures and currency pairs, are filtered out of results. US ETFs mostly list on NYSE Arca, Cboe or NYSE American rather than on NYSE or Nasdaq proper — VOO, SPY, VTI and the rest are all filed under `NYSE`, which is a slight simplification of where they actually trade but has no effect on how they are priced. The provider matches symbols and English names but **not Chinese** — search `2330`, not `台積電`. Adding is open to any signed-in user — otherwise you could not record a trade in a stock nobody had entered yet. Renaming and deleting an instrument stay with admins and have no UI; they are API-only.
 
 Refreshing quotes lives on the Holdings page, where the numbers it feeds are shown.
 

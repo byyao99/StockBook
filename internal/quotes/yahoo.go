@@ -37,15 +37,22 @@ const defaultBaseURL = "https://query1.finance.yahoo.com"
 // AsOf is the market timestamp the provider reported rather than the moment we
 // asked — so staleness shown to a user reflects the price's own age.
 //
-// Name and Exchange come along because a single fetch is then enough to
-// describe an instrument completely: the create path uses them so that the
-// name and currency on file are the provider's, not a caller's claim.
+// Name, Exchange and Type come along because a single fetch is then enough to
+// describe an instrument completely: the create path uses them so that the name
+// and currency on file are the provider's, not a caller's claim, and so that an
+// index or a currency pair is refused for being unholdable rather than for
+// happening to trade somewhere unrecognized.
+//
+// Type is the provider's own word for what the instrument is ("EQUITY", "ETF",
+// "INDEX", "CRYPTOCURRENCY"…) and may be empty if it stops reporting one; see
+// IsHoldable for how that is treated.
 type Quote struct {
 	Price    int64
 	Currency models.Currency
 	AsOf     time.Time
 	Name     string
 	Exchange string
+	Type     string
 }
 
 // Client fetches quotes from Yahoo Finance.
@@ -68,15 +75,26 @@ func newTestClient(baseURL string) *Client {
 	return &Client{http: &http.Client{Timeout: 5 * time.Second}, baseURL: baseURL}
 }
 
+// marketSuffix is the suffix the provider names a market's listings with, and
+// the single source both directions come from: Ticker appends it and FromTicker
+// strips it. Deriving both from one table is what stops the round trip being
+// broken by editing only one side of it.
+//
+// US listings are absent because they carry no suffix — which is exactly what
+// FromTicker uses to recognize them.
+var marketSuffix = map[string]string{
+	"TWSE": ".TW",
+	"TPEX": ".TWO",
+}
+
 // Ticker maps an instrument to the symbol Yahoo knows it by: Taiwan listings
 // take a market suffix, US listings are used as-is. It reports false for
 // markets this provider cannot address.
 func Ticker(symbol, market string) (string, bool) {
+	if suffix, ok := marketSuffix[market]; ok {
+		return symbol + suffix, true
+	}
 	switch market {
-	case "TWSE":
-		return symbol + ".TW", true
-	case "TPEX":
-		return symbol + ".TWO", true
 	case "NYSE", "NASDAQ":
 		return symbol, true
 	default:
@@ -84,20 +102,23 @@ func Ticker(symbol, market string) (string, bool) {
 	}
 }
 
-// exchangeSuffixes are the suffixes Ticker appends itself. A symbol that already
-// carries one has had a full provider ticker pasted into it.
-var exchangeSuffixes = []string{".TWO", ".TW"}
-
 // ExchangeSuffix reports whether symbol already ends in a market suffix that
 // Ticker would append on its own.
+//
+// It answers a narrow question — "is this one of ours?" — and deliberately not
+// the broader "does this ticker belong to some exchange?". A ".DE" or ".L"
+// ticker is not one of ours, and FromTicker rejects it by a different rule.
 //
 // It exists so a pasted provider ticker can be caught when the instrument is
 // created rather than when a quote is first fetched: "2330.TW" filed under TWSE
 // would otherwise be looked up as "2330.TW.TW", and the only symptom would be a
 // missing quote long after the mistake was made.
+//
+// Iteration order does not matter: no suffix in marketSuffix is a suffix of
+// another (".TW" does not match "2330.TWO"), so at most one can ever apply.
 func ExchangeSuffix(symbol string) (string, bool) {
 	upper := strings.ToUpper(symbol)
-	for _, suffix := range exchangeSuffixes {
+	for _, suffix := range marketSuffix {
 		if strings.HasSuffix(upper, suffix) {
 			return suffix, true
 		}
@@ -120,6 +141,7 @@ type chartResponse struct {
 				ShortName          string  `json:"shortName"`
 				LongName           string  `json:"longName"`
 				ExchangeName       string  `json:"exchangeName"`
+				InstrumentType     string  `json:"instrumentType"`
 			} `json:"meta"`
 		} `json:"result"`
 		Error *struct {
@@ -198,6 +220,7 @@ func (c *Client) Fetch(ctx context.Context, ticker string) (Quote, error) {
 		AsOf:     time.Unix(meta.RegularMarketTime, 0),
 		Name:     strings.TrimSpace(name),
 		Exchange: strings.ToUpper(meta.ExchangeName),
+		Type:     strings.ToUpper(strings.TrimSpace(meta.InstrumentType)),
 	}, nil
 }
 

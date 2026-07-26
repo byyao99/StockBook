@@ -26,42 +26,102 @@ type SearchResult struct {
 	Ticker   string
 }
 
-// exchangeMarkets maps the provider's exchange codes to this system's markets.
-// It is the inverse of Ticker: TAI listings are named "2330.TW", so a TAI result
-// becomes symbol 2330 on TWSE. Anything absent is a market this system does not
-// model, and is dropped from results rather than guessed at.
-var exchangeMarkets = map[string]string{
+// twMarkets maps the provider's Taiwan exchange codes to this system's markets.
+// Taiwan is enumerated because the suffix is load-bearing there: it is appended
+// on every lookup, so a listing filed under the wrong one of these two is
+// re-fetched under a ticker that does not exist.
+var twMarkets = map[string]string{
 	"TAI": "TWSE",
 	"TWO": "TPEX",
-	"NMS": "NASDAQ",
-	"NGM": "NASDAQ",
-	"NCM": "NASDAQ",
-	"NYQ": "NYSE",
 }
 
-// searchableTypes are the instrument kinds worth offering. Indices, futures and
-// currencies come back from the same endpoint but cannot be held as shares.
-var searchableTypes = map[string]bool{
+// nasdaqExchanges are the provider's codes for the Nasdaq tiers. They exist only
+// to name a US listing accurately; nothing about pricing depends on them, since
+// every US listing is looked up by its bare symbol either way.
+var nasdaqExchanges = map[string]bool{
+	"NMS": true, // Global Select
+	"NGM": true, // Global Market
+	"NCM": true, // Capital Market
+	"NAS": true,
+}
+
+// holdableTypes are the instrument kinds that can be owned as shares. Indices,
+// futures, currency pairs and mutual funds come back from the same endpoints and
+// are refused.
+var holdableTypes = map[string]bool{
 	"EQUITY": true,
 	"ETF":    true,
 }
 
+// IsHoldable reports whether the provider's word for an instrument's kind
+// describes something this system can hold.
+//
+// An empty kind passes. The provider not saying what something is has to be
+// treated as no information rather than as a refusal, or a change on their side
+// would lock every instrument out of the system at once; the checks that follow
+// — a supported currency, a market this system can name — still apply.
+func IsHoldable(kind string) bool {
+	kind = strings.ToUpper(strings.TrimSpace(kind))
+	return kind == "" || holdableTypes[kind]
+}
+
+// usMarket names the market of a US listing. The Nasdaq tiers are named exactly;
+// every other US venue — NYSE Arca (PCX), Cboe (BTS), NYSE American (ASE), and
+// whatever the provider codes next — falls back to NYSE.
+//
+// The fallback is the point. Market here decides how an instrument is priced and
+// how it is labelled, and for a US listing the pricing half is identical
+// whichever venue it trades on, so an unrecognized code is a labelling
+// imprecision rather than a reason to refuse a real holding. Enumerating venues
+// instead is what kept every NYSE Arca ETF — VOO, SPY, VTI, IWM — out of the
+// system entirely.
+func usMarket(exchange string) string {
+	if nasdaqExchanges[strings.ToUpper(exchange)] {
+		return "NASDAQ"
+	}
+	return "NYSE"
+}
+
 // FromTicker translates a provider ticker and exchange code into the bare symbol
-// and market this system stores. It reports false for exchanges not modelled
-// here.
+// and market this system stores. It is the inverse of Ticker, and reports false
+// for a listing this system cannot address.
+//
+// The question it asks is not "do we recognize this exchange?" but "can we look
+// this up again exactly as the provider names it?", which is what actually
+// decides whether an instrument will ever price:
+//
+//   - a suffix this package appends itself means Taiwan, and the suffix must
+//     agree with the exchange reported alongside it;
+//   - any other suffix belongs to a venue this system does not address — a
+//     ".DE" or ".L" listing looked up bare would resolve to a different
+//     security, or to nothing;
+//   - a bare ticker is a US listing, which prices as-is.
 func FromTicker(ticker, exchange string) (symbol, market string, ok bool) {
-	market, ok = exchangeMarkets[strings.ToUpper(exchange)]
-	if !ok {
+	symbol = strings.ToUpper(strings.TrimSpace(ticker))
+	exchange = strings.ToUpper(strings.TrimSpace(exchange))
+	if symbol == "" || exchange == "" {
 		return "", "", false
 	}
-	symbol = strings.ToUpper(ticker)
+
 	if suffix, has := ExchangeSuffix(symbol); has {
+		market, known := twMarkets[exchange]
+		// A ".TW" ticker reported on TPEX (or the reverse) is a contradiction,
+		// and believing the exchange over the suffix would file it so that every
+		// later fetch asks for a ticker that does not exist.
+		if !known || marketSuffix[market] != suffix {
+			return "", "", false
+		}
 		symbol = strings.TrimSuffix(symbol, suffix)
+		if symbol == "" {
+			return "", "", false
+		}
+		return symbol, market, true
 	}
-	if symbol == "" {
+
+	if strings.Contains(symbol, ".") {
 		return "", "", false
 	}
-	return symbol, market, true
+	return symbol, usMarket(exchange), true
 }
 
 // searchResponse is the slice of the provider's payload this package reads.
@@ -112,7 +172,9 @@ func (c *Client) Search(ctx context.Context, query string) ([]SearchResult, erro
 
 	results := make([]SearchResult, 0, len(body.Quotes))
 	for _, q := range body.Quotes {
-		if !searchableTypes[strings.ToUpper(q.QuoteType)] {
+		// The search endpoint always says what a result is, so an unknown kind
+		// here is a kind we cannot hold rather than missing information.
+		if !holdableTypes[strings.ToUpper(q.QuoteType)] {
 			continue
 		}
 		symbol, market, ok := FromTicker(q.Symbol, q.Exchange)
