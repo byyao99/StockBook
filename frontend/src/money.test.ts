@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   UNKNOWN,
+  formatBpsOrUnknown,
   formatCents,
   formatCentsOrUnknown,
   formatPercent,
@@ -96,5 +97,21 @@ describe('the unknown-value formatters', () => {
     expect(formatCentsOrUnknown(18000)).toBe('$180.00')
     expect(formatSignedOrUnknown(-1)).toBe('-$0.01')
     expect(formatPercentOrUnknown(0.05)).toBe('+5.00%')
+  })
+})
+
+describe('formatBpsOrUnknown', () => {
+  it('reads basis points as a signed percentage', () => {
+    expect(formatBpsOrUnknown(1234)).toBe('+12.34%')
+    expect(formatBpsOrUnknown(-5000)).toBe('-50.00%')
+    expect(formatBpsOrUnknown(10000)).toBe('+100.00%')
+  })
+
+  it('shows breaking even as zero, not as unknown', () => {
+    expect(formatBpsOrUnknown(0)).toBe('+0.00%')
+  })
+
+  it('marks a rate that could not be computed as unknown', () => {
+    expect(formatBpsOrUnknown(null)).toBe(UNKNOWN)
   })
 })

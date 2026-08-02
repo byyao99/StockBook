@@ -183,3 +183,75 @@ func TestRealizedReportRejectsAMalformedDate(t *testing.T) {
 		t.Errorf("got %d, want 400", rec.Code)
 	}
 }
+
+// The returns endpoint answers over the caller's whole ledger, valuing what is
+// still held at its current quote. The rate itself is pinned down against fixed
+// dates in the db and models tests; here the point is that the route is wired,
+// scoped to the caller, and reports the components its number was built from.
+func TestReturnsReportEndpoint(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "investor", models.RoleUser)
+	price := int64(12000)
+	inst := e.seedInstrument(t, "2330", &price)
+
+	buy := tradePayload(inst.ID, models.SideBuy, 100, 10000, tradedOn(2025, time.January, 2))
+	if rec := e.do(t, http.MethodPost, "/api/v1/transactions", buy, token); rec.Code != http.StatusCreated {
+		t.Fatalf("buy: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var report []db.ReturnsSummary
+	rec := e.do(t, http.MethodGet, "/api/v1/reports/returns", nil, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returns: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decodeData(t, rec, &report)
+
+	if len(report) != 1 {
+		t.Fatalf("got %d currencies, want 1: %+v", len(report), report)
+	}
+	got := report[0]
+	if got.Invested != 1000000 || got.EndingValue != 1200000 || got.NetGain != 200000 {
+		t.Errorf("unexpected components: %+v", got)
+	}
+	if got.XIRRBps == nil {
+		t.Fatalf("no rate computed: %q", got.Unavailable)
+	}
+	// The trade is in the past and the holding is up 20%, so the annualized rate
+	// is positive whenever this test happens to run.
+	if *got.XIRRBps <= 0 {
+		t.Errorf("rate %d bps, want positive", *got.XIRRBps)
+	}
+	if got.OpenPositions != 1 || got.PricedPositions != 1 {
+		t.Errorf("coverage %d priced of %d open, want 1 of 1",
+			got.PricedPositions, got.OpenPositions)
+	}
+}
+
+// A ledger is personal, and so is every number derived from one.
+func TestReturnsReportDoesNotLeakAnotherBook(t *testing.T) {
+	e := setup(t)
+	owner := e.token(t, "owner", models.RoleUser)
+	admin := e.token(t, "admin", models.RoleAdmin)
+	price := int64(12000)
+	inst := e.seedInstrument(t, "2330", &price)
+
+	buy := tradePayload(inst.ID, models.SideBuy, 100, 10000, tradedOn(2025, time.January, 2))
+	e.do(t, http.MethodPost, "/api/v1/transactions", buy, owner)
+
+	var report []db.ReturnsSummary
+	rec := e.do(t, http.MethodGet, "/api/v1/reports/returns", nil, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decodeData(t, rec, &report)
+	if len(report) != 0 {
+		t.Errorf("admin sees another user's return: %+v", report)
+	}
+}
+
+func TestReturnsReportRequiresAuth(t *testing.T) {
+	e := setup(t)
+	if rec := e.do(t, http.MethodGet, "/api/v1/reports/returns", nil, ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("got %d, want 401", rec.Code)
+	}
+}

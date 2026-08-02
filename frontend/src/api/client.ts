@@ -11,6 +11,7 @@ import type {
   Position,
   RealizedSummary,
   RefreshReport,
+  ReturnsSummary,
   Role,
   Transaction,
   TransactionEdit,
@@ -200,4 +201,9 @@ export const reportApi = {
     const query = params.toString()
     return request<RealizedSummary[]>(`/reports/realized${query ? `?${query}` : ''}`)
   },
+
+  // The annualized money-weighted return, one entry per currency. It takes no
+  // date range on purpose: a windowed rate needs the book's market value on the
+  // opening day, which the server cannot recover from current quotes alone.
+  returns: () => request<ReturnsSummary[]>('/reports/returns'),
 }

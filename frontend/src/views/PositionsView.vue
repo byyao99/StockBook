@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { instrumentApi, positionApi } from '../api/client'
+import { computed, onMounted, ref } from 'vue'
+import { instrumentApi, positionApi, reportApi } from '../api/client'
 import {
+  formatBpsOrUnknown,
   formatCents,
   formatCentsOrUnknown,
   formatPercentOrUnknown,
@@ -17,7 +18,13 @@ import {
   unpricedCount,
 } from '../positionMath'
 import PaginationBar from '../components/PaginationBar.vue'
-import type { CurrencySummary, Position, RefreshResult } from '../types'
+import type {
+  Currency,
+  CurrencySummary,
+  Position,
+  RefreshResult,
+  ReturnsSummary,
+} from '../types'
 
 const PAGE_SIZE = 20
 
@@ -26,6 +33,10 @@ const positions = ref<Position[]>([])
 // there is no FX rate in this system, so adding TWD to USD would produce a
 // number that means nothing.
 const summaries = ref<CurrencySummary[]>([])
+// The annualized money-weighted return, also one per currency. It belongs on
+// this page rather than under Realized: its closing figure is the market value
+// of what is still held, which is exactly what the cards here already show.
+const returns = ref<ReturnsSummary[]>([])
 const total = ref(0)
 const offset = ref(0)
 const includeClosed = ref(false)
@@ -42,13 +53,15 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [page, totals] = await Promise.all([
+    const [page, totals, rates] = await Promise.all([
       positionApi.list(PAGE_SIZE, offset.value, includeClosed.value),
       positionApi.summary(),
+      reportApi.returns(),
     ])
     positions.value = page.items
     total.value = page.pagination.total
     summaries.value = totals
+    returns.value = rates
     // If a filter change emptied the current page, step back one.
     if (positions.value.length === 0 && offset.value > 0) {
       offset.value = Math.max(0, offset.value - PAGE_SIZE)
@@ -104,6 +117,32 @@ function toggleClosed() {
 function plClass(value: number | null): string {
   if (value === null) return 'muted'
   return value < 0 ? 'loss' : 'gain'
+}
+
+const returnsByCurrency = computed(() => {
+  const map = new Map<Currency, ReturnsSummary>()
+  for (const r of returns.value) map.set(r.currency, r)
+  return map
+})
+
+/** The annualized rate for a currency in basis points, null when there is none. */
+function rateFor(currency: Currency): number | null {
+  return returnsByCurrency.value.get(currency)?.xirr_bps ?? null
+}
+
+/**
+ * What to say under the rate: the period it averages over, or — when the server
+ * could not compute one — its reason, in the server's own words. An absent rate
+ * has to explain itself, because the alternative reading of a blank figure is
+ * that the book went nowhere.
+ */
+function rateNote(currency: Currency): string {
+  const r = returnsByCurrency.value.get(currency)
+  if (!r) return ''
+  if (r.xirr_bps === null) return r.unavailable ?? 'not enough history to measure'
+  // Dates are read off the UTC timestamp, the same way the ledger shows them.
+  const since = r.first_flow_at?.slice(0, 10)
+  return since ? `per year since ${since}` : 'per year'
 }
 
 onMounted(load)
@@ -168,11 +207,23 @@ onMounted(load)
           </strong>
           <span class="muted stat-note">banked, all time — dividends included</span>
         </div>
+        <!-- The one figure a plain gain-over-cost percentage cannot give: it
+             weights every dollar by how long it was actually at work, so a book
+             is comparable with another book, or with a savings rate. -->
+        <div class="stat">
+          <span class="stat-label">Annualized (XIRR)</span>
+          <strong class="stat-value" :class="plClass(rateFor(s.currency))">
+            {{ formatBpsOrUnknown(rateFor(s.currency)) }}
+          </strong>
+          <span class="muted stat-note">{{ rateNote(s.currency) }}</span>
+        </div>
       </div>
       <p v-if="unpricedCount(s) > 0" class="notice">
         {{ unpricedCount(s) }} open {{ unpricedCount(s) === 1 ? 'holding has' : 'holdings have' }}
         no quote, so the {{ s.currency }} market value and unrealized figures exclude
-        {{ unpricedCount(s) === 1 ? 'it' : 'them' }}. Try Refresh quotes above.
+        {{ unpricedCount(s) === 1 ? 'it' : 'them' }}, and the annualized return leaves
+        {{ unpricedCount(s) === 1 ? 'its' : 'their' }} history out entirely — money paid in with
+        no known value to show for it would read as a total loss. Try Refresh quotes above.
       </p>
     </section>
 

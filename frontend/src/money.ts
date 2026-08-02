@@ -70,3 +70,13 @@ export function formatSignedOrUnknown(cents: number | null, currency?: Currency)
 export function formatPercentOrUnknown(fraction: number | null): string {
   return fraction === null ? UNKNOWN : formatPercent(fraction)
 }
+
+/**
+ * Format a rate given in basis points, e.g. 1234 -> "+12.34%". Rates cross the
+ * wire as integer basis points for the same reason amounts cross it as integer
+ * minor units: the rounding is decided once, on the server, rather than drifting
+ * through whatever each client does with 0.12340000000000001.
+ */
+export function formatBpsOrUnknown(bps: number | null): string {
+  return bps === null ? UNKNOWN : formatPercent(bps / 10000)
+}

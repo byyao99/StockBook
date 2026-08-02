@@ -129,6 +129,7 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 		rep := v1.Group("/reports", middleware.RequireAuth(am, s))
 		{
 			rep.GET("/realized", report.Realized)
+			rep.GET("/returns", report.Returns)
 		}
 	}
 

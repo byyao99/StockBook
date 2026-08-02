@@ -199,6 +199,39 @@ export interface RealizedSummary {
   instruments: RealizedRow[]
 }
 
+// ReturnsSummary is one currency's annualized money-weighted rate of return
+// (XIRR) over the whole ledger, with the figures behind it.
+//
+// The period is always since the first entry — never a window. A windowed rate
+// needs the market value of the book on the day the window opened, and the
+// server keeps only each instrument's current quote, so that value is not
+// recoverable.
+//
+// An open holding with no quote is left out of the calculation ENTIRELY, its
+// purchases along with its unknown value: counting the money that went in
+// without the value it turned into would report the holding as a wipeout.
+// Compare `priced_positions` with `open_positions` to see how much of the book
+// the rate covers.
+export interface ReturnsSummary {
+  currency: Currency
+  // Basis points: 1234 means 12.34% a year. null when no rate could be
+  // computed, with `unavailable` carrying the reason in words — a book that
+  // cannot be measured has not broken even, so it must never render as 0%.
+  xirr_bps: number | null
+  unavailable?: string
+  invested: number
+  returned: number
+  ending_value: number
+  // returned + ending_value - invested.
+  net_gain: number
+  // The earliest entry counted, so the UI can say what the rate averages over.
+  first_flow_at: string | null
+  // When the open holdings were valued: the far end of the period.
+  as_of: string
+  open_positions: number
+  priced_positions: number
+}
+
 // A candidate returned by the instrument search, already carrying the exact
 // values that would be stored — so adding one types nothing and can mistype
 // nothing. `exists` flags a symbol already in the master data.
