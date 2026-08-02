@@ -8,7 +8,7 @@ import {
   formatQty,
   formatSignedCents,
 } from '../money'
-import type { RealizedSummary } from '../types'
+import type { HindsightSummary, RealizedSummary } from '../types'
 
 // How many years back the quick picker offers. A ledger older than this is
 // still reachable through the date fields; the buttons are for the years
@@ -16,6 +16,10 @@ import type { RealizedSummary } from '../types'
 const YEARS_OFFERED = 5
 
 const summaries = ref<RealizedSummary[]>([])
+// What the same period's sales would be worth had the shares never been sold.
+// It shares the period picker because it asks about the same entries; unlike
+// the realized figures it is always measured against today's quote.
+const hindsight = ref<HindsightSummary[]>([])
 const loading = ref(false)
 const error = ref('')
 
@@ -57,7 +61,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    summaries.value = await reportApi.realized(from.value || undefined, to.value || undefined)
+    const [realized, sells] = await Promise.all([
+      reportApi.realized(from.value || undefined, to.value || undefined),
+      reportApi.hindsight(from.value || undefined, to.value || undefined),
+    ])
+    summaries.value = realized
+    hindsight.value = sells
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -89,6 +98,23 @@ function entryCounts(s: RealizedSummary): string {
 
 function plClass(value: number): string {
   return value < 0 ? 'loss' : 'gain'
+}
+
+/**
+ * What the difference between the sale and today's price means, in words. A
+ * signed number alone does not say which way is good here: money left on the
+ * table and money saved by getting out first are both worth naming.
+ */
+function sellingVerdict(gain: number): string {
+  if (gain < 0) return 'left on the table by selling'
+  if (gain > 0) return 'saved by selling before the fall'
+  return 'exactly what those shares fetched'
+}
+
+/** "3 sales · 450 shares" for the period. */
+function saleCounts(h: HindsightSummary): string {
+  const sales = `${h.sells} ${h.sells === 1 ? 'sale' : 'sales'}`
+  return `${sales} · ${formatQty(h.shares_sold)} shares`
 }
 
 // The year in progress is the one a user opens this page to look at.
@@ -131,6 +157,8 @@ onMounted(() => selectYear(thisYear))
       Nothing was sold and no dividend was paid in this period, so there is nothing realized to
       report.
     </p>
+
+    <h2 v-if="!loading && summaries.length > 0" class="report-title">Realized</h2>
 
     <!-- One block per currency, never a combined figure: there is no exchange
          rate in this system, so a TWD gain and a USD gain cannot be added. -->
@@ -224,6 +252,92 @@ onMounted(() => selectYear(thisYear))
         </table>
       </div>
     </section>
+
+    <!-- What the same period's sales would be worth if they had never been
+         made. Every broker shows what a sale banked; almost none shows what it
+         gave up. -->
+    <section v-if="!loading && hindsight.length > 0" class="hindsight">
+      <h2 class="report-title">If you had never sold</h2>
+      <p class="muted lede">
+        What the sales in this period fetched, against what those same shares would be worth at
+        the latest quote. It does not follow the money: cash from a sale usually buys something
+        else, and this book has no cash balance to trace it into — so read a row where shares are
+        still held as a round trip rather than as a loss taken.
+      </p>
+
+      <div v-for="h in hindsight" :key="h.currency" class="currency-block">
+        <h3 class="currency-title">
+          {{ h.currency }}
+          <span class="muted">· {{ periodLabel }} · {{ saleCounts(h) }}</span>
+        </h3>
+
+        <div class="cards">
+          <div class="stat">
+            <span class="stat-label">Sales fetched</span>
+            <strong class="stat-value">{{ formatCents(h.proceeds, h.currency) }}</strong>
+            <span class="muted stat-note">after selling fees</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Worth today</span>
+            <strong class="stat-value">{{ formatCents(h.value_if_held, h.currency) }}</strong>
+            <span class="muted stat-note">the same shares at the latest quote</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Difference</span>
+            <strong class="stat-value" :class="plClass(h.selling_gain)">
+              {{ formatSignedCents(h.selling_gain, h.currency) }}
+            </strong>
+            <span class="muted stat-note">{{ sellingVerdict(h.selling_gain) }}</span>
+          </div>
+        </div>
+
+        <p v-if="h.unpriced_sales > 0" class="notice">
+          {{ h.unpriced_sales }} {{ h.unpriced_sales === 1 ? 'sale is' : 'sales are' }} left out:
+          {{ h.unpriced_sales === 1 ? 'its' : 'their' }} instrument has no quote, so there is
+          nothing to compare against. Refresh quotes on the Holdings page.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th class="num">Sales</th>
+                <th class="num">Shares sold</th>
+                <th class="num">Fetched</th>
+                <th class="num">Last price</th>
+                <th class="num">Worth today</th>
+                <th class="num">Difference</th>
+                <th class="num">Still held</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Worst decision first: the sales that cost the most are what
+                   there is to learn from. -->
+              <tr v-for="row in h.instruments" :key="row.instrument_id">
+                <td>
+                  <strong>{{ row.symbol }}</strong>
+                  <div class="muted">{{ row.name }}</div>
+                </td>
+                <td class="num">{{ formatQty(row.sells) }}</td>
+                <td class="num">{{ formatQty(row.shares_sold) }}</td>
+                <td class="num">{{ formatCents(row.proceeds, row.currency) }}</td>
+                <td class="num">{{ formatCents(row.last_price, row.currency) }}</td>
+                <td class="num">{{ formatCents(row.value_if_held, row.currency) }}</td>
+                <td class="num" :class="plClass(row.selling_gain)">
+                  {{ formatSignedCents(row.selling_gain, row.currency) }}
+                </td>
+                <!-- Shares still held mean the position was re-entered, so the
+                     difference beside it was never actually given up. -->
+                <td class="num" :class="row.shares_held === 0 ? 'muted' : ''">
+                  {{ row.shares_held === 0 ? UNKNOWN : formatQty(row.shares_held) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -275,6 +389,24 @@ onMounted(() => selectYear(thisYear))
 }
 .currency-block {
   margin-bottom: 24px;
+}
+/* Two reports share this page, so each says which one it is. */
+.report-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 0 0 10px;
+}
+.hindsight {
+  margin-top: 32px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 20px;
+}
+.lede {
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 68ch;
+  margin: 0 0 16px;
 }
 .currency-title {
   font-size: 13px;

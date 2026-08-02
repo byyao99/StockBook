@@ -199,6 +199,50 @@ export interface RealizedSummary {
   instruments: RealizedRow[]
 }
 
+// HindsightRow is one instrument's answer to "what did selling cost me?" —
+// what the sales brought in, against what those same shares would be worth at
+// today's quote.
+//
+// `selling_gain` === `proceeds` - `value_if_held` always holds. Negative means
+// the shares would be worth more now than the sales fetched.
+//
+// `shares_held` is the position today, and is there to make a re-entry visible:
+// "sold 100, holds 100" means the loss this row reports was not actually taken.
+// The report cannot net that out — following the cash from a sale into whatever
+// it bought next would need a cash balance, which this system does not have.
+export interface HindsightRow {
+  instrument_id: string
+  symbol: string
+  name: string
+  market: string
+  currency: Currency
+  sells: number
+  shares_sold: number
+  shares_held: number
+  proceeds: number
+  value_if_held: number
+  selling_gain: number
+  // The quote the whole comparison rests on.
+  last_price: number
+}
+
+// HindsightSummary totals one currency's sell decisions over the period. Rows
+// come back worst decision first — the regret end is what the report is read for.
+//
+// `unpriced_sales` counts sales whose instrument has no quote and which are
+// therefore left out: with nothing to compare against, valuing those shares at
+// zero would report every one of those sales as a masterstroke.
+export interface HindsightSummary {
+  currency: Currency
+  sells: number
+  shares_sold: number
+  proceeds: number
+  value_if_held: number
+  selling_gain: number
+  unpriced_sales: number
+  instruments: HindsightRow[]
+}
+
 // ReturnsSummary is one currency's annualized money-weighted rate of return
 // (XIRR) over the whole ledger, with the figures behind it.
 //

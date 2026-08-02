@@ -40,6 +40,28 @@ func (h *ReportHandler) Realized(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": report})
 }
 
+// Hindsight handles GET /api/v1/reports/hindsight?from=&to=, always scoped to
+// the caller: what the sales in that period would be worth had the shares never
+// been sold. Both bounds are optional and behave exactly as Realized's do.
+//
+// Unlike Returns it takes a period happily, because the comparison is always
+// against *today's* quote — no historical price is needed to ask it about a
+// past year.
+func (h *ReportHandler) Hindsight(c *gin.Context) {
+	from, to, err := parseDateRange(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	report, err := h.db.HindsightReport(callerID(c), from, to)
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": report})
+}
+
 // Returns handles GET /api/v1/reports/returns, always scoped to the caller: the
 // annualized money-weighted rate of return on their book, one entry per currency.
 //

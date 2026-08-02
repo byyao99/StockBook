@@ -255,3 +255,76 @@ func TestReturnsReportRequiresAuth(t *testing.T) {
 		t.Errorf("got %d, want 401", rec.Code)
 	}
 }
+
+// What the sales in a period would be worth had the shares never been sold.
+// The arithmetic is pinned down in the db tests; here the point is that the
+// route is wired, honours the period, and reports the components behind the
+// number so a reader can check it.
+func TestHindsightReportEndpoint(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "seller", models.RoleUser)
+	price := int64(20000)
+	inst := e.seedInstrument(t, "2330", &price)
+
+	buy := tradePayload(inst.ID, models.SideBuy, 100, 10000, tradedOn(2025, time.January, 5))
+	if rec := e.do(t, http.MethodPost, "/api/v1/transactions", buy, token); rec.Code != http.StatusCreated {
+		t.Fatalf("buy: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	sell := tradePayload(inst.ID, models.SideSell, 100, 12000, tradedOn(2025, time.December, 31))
+	if rec := e.do(t, http.MethodPost, "/api/v1/transactions", sell, token); rec.Code != http.StatusCreated {
+		t.Fatalf("sell: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var report []db.HindsightSummary
+	// The closing day of the range: a bound read as midnight would drop the sale.
+	rec := e.do(t, http.MethodGet,
+		"/api/v1/reports/hindsight?from=2025-01-01&to=2025-12-31", nil, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hindsight: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decodeData(t, rec, &report)
+
+	if len(report) != 1 {
+		t.Fatalf("got %d currencies, want 1: %+v", len(report), report)
+	}
+	got := report[0]
+	if got.Proceeds != 1200000 || got.ValueIfHeld != 2000000 || got.SellingGain != -800000 {
+		t.Errorf("unexpected components: %+v", got)
+	}
+	if len(got.Instruments) != 1 || got.Instruments[0].Symbol != "2330" {
+		t.Errorf("unexpected breakdown: %+v", got.Instruments)
+	}
+}
+
+// A ledger is personal, and so is every number derived from one.
+func TestHindsightReportDoesNotLeakAnotherBook(t *testing.T) {
+	e := setup(t)
+	owner := e.token(t, "owner", models.RoleUser)
+	admin := e.token(t, "admin", models.RoleAdmin)
+	price := int64(20000)
+	inst := e.seedInstrument(t, "2330", &price)
+
+	buy := tradePayload(inst.ID, models.SideBuy, 100, 10000, tradedOn(2025, time.March, 1))
+	e.do(t, http.MethodPost, "/api/v1/transactions", buy, owner)
+	sell := tradePayload(inst.ID, models.SideSell, 100, 12000, tradedOn(2025, time.March, 2))
+	e.do(t, http.MethodPost, "/api/v1/transactions", sell, owner)
+
+	var report []db.HindsightSummary
+	rec := e.do(t, http.MethodGet, "/api/v1/reports/hindsight", nil, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decodeData(t, rec, &report)
+	if len(report) != 0 {
+		t.Errorf("admin sees another user's sell decisions: %+v", report)
+	}
+}
+
+func TestHindsightReportRejectsAMalformedDate(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "seller", models.RoleUser)
+	rec := e.do(t, http.MethodGet, "/api/v1/reports/hindsight?to=whenever", nil, token)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("got %d, want 400", rec.Code)
+	}
+}

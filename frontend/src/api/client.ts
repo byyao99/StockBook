@@ -8,6 +8,7 @@ import type {
   InstrumentCandidate,
   InstrumentInput,
   CurrencySummary,
+  HindsightSummary,
   Position,
   RealizedSummary,
   RefreshReport,
@@ -190,20 +191,31 @@ export const positionApi = {
   summary: () => request<CurrencySummary[]>('/positions/summary'),
 }
 
+// The `?from=&to=` shared by the reports that take a period. Both bounds are
+// YYYY-MM-DD and inclusive: the server stretches a bare `to` to the end of that
+// day, so a year ends on 12-31 rather than the day before it. Either may be
+// omitted, which leaves that end open.
+function dateRangeQuery(from?: string, to?: string): string {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+  const query = params.toString()
+  return query ? `?${query}` : ''
+}
+
 export const reportApi = {
-  // What the caller banked between two dates, one entry per currency. Both
-  // bounds are YYYY-MM-DD and inclusive: the server stretches a bare `to` to the
-  // end of that day, so a year ends on 12-31 rather than the day before it.
-  realized: (from?: string, to?: string) => {
-    const params = new URLSearchParams()
-    if (from) params.set('from', from)
-    if (to) params.set('to', to)
-    const query = params.toString()
-    return request<RealizedSummary[]>(`/reports/realized${query ? `?${query}` : ''}`)
-  },
+  // What the caller banked over the period, one entry per currency.
+  realized: (from?: string, to?: string) =>
+    request<RealizedSummary[]>(`/reports/realized${dateRangeQuery(from, to)}`),
 
   // The annualized money-weighted return, one entry per currency. It takes no
   // date range on purpose: a windowed rate needs the book's market value on the
   // opening day, which the server cannot recover from current quotes alone.
   returns: () => request<ReturnsSummary[]>('/reports/returns'),
+
+  // What the sales in a period would be worth had the shares never been sold.
+  // The bounds behave exactly as realized's do — this one takes a period
+  // happily, since the comparison is always against today's quote.
+  hindsight: (from?: string, to?: string) =>
+    request<HindsightSummary[]>(`/reports/hindsight${dateRangeQuery(from, to)}`),
 }
