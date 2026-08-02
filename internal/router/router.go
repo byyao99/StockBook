@@ -137,6 +137,7 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 			rep.GET("/realized", report.Realized)
 			rep.GET("/returns", report.Returns)
 			rep.GET("/hindsight", report.Hindsight)
+			rep.GET("/curve", report.Curve)
 		}
 	}
 

@@ -19,6 +19,13 @@ import (
 // clock tick.
 const ledgerOrder = "traded_at asc, created_at asc, id asc"
 
+// qualifiedLedgerOrder is the same order for queries that join instruments,
+// where `created_at` alone is ambiguous — both tables have one. It is spelled
+// out beside the original rather than derived from it so that the two can be
+// read together: they are one rule, and a change to either that did not change
+// the other would fold the same ledger two different ways.
+const qualifiedLedgerOrder = "transactions.traded_at asc, transactions.created_at asc, transactions.id asc"
+
 // CreateTransaction appends a transaction to a user's ledger and brings the
 // affected position back in line, both inside a single database transaction.
 //

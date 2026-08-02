@@ -155,6 +155,25 @@ Stored quotes carry the **market timestamp the provider reported**, not the mome
 
 `POST /api/v1/instruments/sync-history` is open to any authenticated user on the same terms as the quote refresh, and rate-limited harder (2/min) because a first run downloads years. **Only traded instruments are fetched, and only from the day they were first traded** — earlier prices value nothing, and an instrument nobody holds has nothing to plot, which is what keeps a run proportional to the book rather than to the master data. Runs are incremental: an instrument already holding history is topped up from `historyOverlap` before its last session, because the provider revises a close occasionally and the most recent bar can be provisional. A partial failure is not an error for the run, exactly as in a quote refresh, and a series in the wrong currency is a failure rather than a price.
 
+### The equity curve
+
+`GET /api/v1/reports/curve?from=&to=` (`internal/db/curve.go`) returns the daily history, one entry per currency. Its bounds select **sessions, not trades** — the whole ledger is always folded and the window only decides which days are reported, so narrowing to last month still shows holdings bought years ago.
+
+**`MarketValue` is not a return, and this is the whole difficulty.** A book that doubles its contributions doubles its market value without having earned anything, so drawdown or volatility measured on that curve would report saving as performance and a withdrawal as a crash. `Index` is the figure that answers performance: a notional 100 chained from daily returns with the contributions divided out.
+
+```
+r     = (value at close − money paid in today) / value at the previous close − 1
+index = index yesterday × (1 + r)
+```
+
+**Flows come out of the numerator, not into the denominator**, and that choice is load-bearing. The only price stored for a session is its close, so a purchase is most nearly a purchase *at* the close — money that has not been at work yet. Counting it into the denominator as if it had been there since the open divides the day's real gain by a base that money never earned on, and a large deposit silently drags the day's return toward zero. `TestCurveIndexIgnoresContributions` is the test that catches this: two books holding the same stock over the same days must report the same return even when one keeps adding to the position. It failed on the first implementation, which used the denominator form.
+
+The first session with anything in it anchors the index at 100 and reports no return, there being no previous close to measure against. A trade dated on a day the market did not open folds into the next session rather than being dropped. One artifact remains, and it is the standard one: a trade filled away from the close credits that difference to the day it happened, since the flow subtracted is the cash that actually moved while the shares are valued at the close. Pricing the flow at the close instead would hide a genuinely good fill, which the money-weighted return reports more directly anyway.
+
+**An instrument whose stored history does not reach the day it was first traded is excluded whole, trades and all**, and counted in `WithoutHistory` — the same rule the returns report follows. Counting it short would understate the book for every day before its prices begin, which looks exactly like a real drawdown. Interior gaps are different and are covered by carrying the last close forward (`priceSeries.on`), which never carries *backwards*: that is the case the exclusion exists for.
+
+`TWRBps` (time-weighted) and the money-weighted `XIRRBps` are deliberately both reported and are not the same question — time-weighted measures the picking, money-weighted measures the picking *and* the timing of what was put in. Both annualize actual/365 so the two figures on one book are measured the same way.
+
 ### Hindsight on sell decisions
 
 `GET /api/v1/reports/hindsight?from=&to=` (`internal/db/hindsight.go`) answers what the sales in a period would be worth had the shares never been sold. Every broker shows what a sale banked; almost none shows what it gave up. Shape is a **slice, one entry per currency**, with per-instrument rows inside — the same as `RealizedReport`, and it shares `parseDateRange`, so `?to=YYYY-MM-DD` covers the whole of that day here too. Unlike `/reports/returns` it takes a period happily: the comparison is always against *today's* quote, so no historical price is needed to ask it about a past year.

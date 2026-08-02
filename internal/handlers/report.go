@@ -62,6 +62,33 @@ func (h *ReportHandler) Hindsight(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": report})
 }
 
+// Curve handles GET /api/v1/reports/curve?from=&to=, always scoped to the
+// caller: the daily history of their book, one entry per currency.
+//
+// Bounds are optional YYYY-MM-DD dates. They select sessions rather than trades,
+// so unlike the other reports the period does not change what is counted — the
+// whole ledger is always folded, and the window only decides which days are
+// reported. Narrowing it to last month still shows holdings bought years ago.
+func (h *ReportHandler) Curve(c *gin.Context) {
+	from, to := c.Query("from"), c.Query("to")
+	for _, bound := range []string{from, to} {
+		if bound == "" {
+			continue
+		}
+		if _, err := time.Parse(time.DateOnly, bound); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "dates must be YYYY-MM-DD"})
+			return
+		}
+	}
+
+	curves, err := h.db.EquityCurve(callerID(c), from, to)
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": curves})
+}
+
 // Returns handles GET /api/v1/reports/returns, always scoped to the caller: the
 // annualized money-weighted rate of return on their book, one entry per currency.
 //
