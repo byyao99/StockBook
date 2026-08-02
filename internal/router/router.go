@@ -102,6 +102,12 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 			// the caller owns. The rate limit is what protects the outbound
 			// dependency; the handler additionally leaves current quotes alone.
 			i.POST("/refresh-quotes", middleware.RateLimit(6, time.Minute), instrument.RefreshQuotes)
+			// History is fetched on the same terms as quotes and for the same
+			// reason, but a run is far heavier — a first sync downloads years
+			// for every traded instrument — so the ceiling is lower. It is also
+			// rarely needed: once a book is backfilled, a daily top-up is
+			// enough, which is what cron is for.
+			i.POST("/sync-history", middleware.RateLimit(2, time.Minute), instrument.SyncHistory)
 			i.DELETE("/:id", middleware.RequireRole(am, s, models.RoleAdmin), instrument.Delete)
 		}
 

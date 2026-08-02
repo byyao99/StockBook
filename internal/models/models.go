@@ -122,6 +122,33 @@ type Instrument struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
+// DailyClose is one instrument's closing price on one trading day.
+//
+// This is the only history in the system. Instrument.LastPrice answers "what is
+// it worth now?"; these rows answer "what was it worth then?", which is what any
+// figure spanning time — an equity curve, a drawdown, a benchmark comparison —
+// has to consult. The two are kept apart rather than merged because they are
+// maintained differently: the quote is refreshed against the provider's latest,
+// while a close, once recorded, describes a session that is over and does not
+// change.
+//
+// Date is the calendar day as YYYY-MM-DD, not a timestamp. A daily bar belongs
+// to a session rather than to an instant, so carrying a time would invite
+// comparisons that depend on the reader's zone; as a string it also sorts
+// lexicographically into chronological order and compares exactly. It is the
+// same way the ledger already names a day.
+//
+// Close is int64 minor units like every other price. The composite primary key
+// is what makes a re-fetch idempotent: the same session fetched twice updates
+// one row instead of accumulating duplicates that would each be counted.
+type DailyClose struct {
+	InstrumentID string    `gorm:"primaryKey" json:"instrument_id"`
+	Date         string    `gorm:"primaryKey" json:"date"`
+	Close        int64     `json:"close"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // TransactionSide is what an entry does to a position.
 type TransactionSide string
 

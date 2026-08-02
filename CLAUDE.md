@@ -145,6 +145,16 @@ Stored quotes carry the **market timestamp the provider reported**, not the mome
 
 **A bare `to=YYYY-MM-DD` covers the whole of that day.** `handlers.parseDateRange` stretches a date-only upper bound to the last instant of it, because `traded_at <= 2026-12-31` means midnight and would drop every trade made on the closing day of the range — a yearly report omitting its own last entry. `GET /transactions` shares the helper, so its `?to` behaves the same way. Bare dates are read as UTC, which is the calendar the rest of the system speaks: the trade form stores a chosen date at **noon UTC** precisely so the day a trade belongs to does not depend on the reader's zone, and the ledger displays it by slicing the first ten characters off the UTC timestamp.
 
+### Price history
+
+`Instrument.LastPrice` answers "what is it worth now?"; `models.DailyClose` answers "what was it worth then?", which is what any figure spanning time has to consult. The two are kept apart because they are maintained differently — a quote is refreshed against the provider's latest, while a close describes a session that is over and does not change.
+
+`DailyClose.Date` is the calendar day as **YYYY-MM-DD, not a timestamp**: a daily bar belongs to a session rather than an instant, so a time would invite comparisons that depend on the reader's zone, and as a string it sorts lexicographically into chronological order. The composite primary key `(instrument_id, date)` is what makes a refetch idempotent — `db.SaveDailyCloses` upserts, so the same session fetched twice updates one row instead of accumulating duplicates that would each be counted.
+
+`quotes.Client.History` shares `chart()` with `Fetch`, so there is still exactly one place that knows how to talk to the provider. `quotes.barDate` names the session a bar belongs to by taking the **UTC date of the provider's timestamp**, which works only because every market this system addresses opens after midnight UTC (Taipei 01:00, New York 13:30/14:30). A market opening earlier would break it, and none of the supported ones does. A bar the provider reports as null is skipped rather than read as 0 — recording a stock as worthless for a day is exactly the kind of thing every consumer downstream would believe.
+
+`POST /api/v1/instruments/sync-history` is open to any authenticated user on the same terms as the quote refresh, and rate-limited harder (2/min) because a first run downloads years. **Only traded instruments are fetched, and only from the day they were first traded** — earlier prices value nothing, and an instrument nobody holds has nothing to plot, which is what keeps a run proportional to the book rather than to the master data. Runs are incremental: an instrument already holding history is topped up from `historyOverlap` before its last session, because the provider revises a close occasionally and the most recent bar can be provisional. A partial failure is not an error for the run, exactly as in a quote refresh, and a series in the wrong currency is a failure rather than a price.
+
 ### Hindsight on sell decisions
 
 `GET /api/v1/reports/hindsight?from=&to=` (`internal/db/hindsight.go`) answers what the sales in a period would be worth had the shares never been sold. Every broker shows what a sale banked; almost none shows what it gave up. Shape is a **slice, one entry per currency**, with per-instrument rows inside — the same as `RealizedReport`, and it shares `parseDateRange`, so `?to=YYYY-MM-DD` covers the whole of that day here too. Unlike `/reports/returns` it takes a period happily: the comparison is always against *today's* quote, so no historical price is needed to ask it about a past year.
@@ -191,6 +201,7 @@ The UI puts this on `/positions` rather than under Realized, because the closing
 | `POST /instruments`, `GET /instruments/search` | any authenticated user, rate-limited |
 | `PUT/DELETE /instruments/:id`, `PATCH /instruments/:id/price` | admin |
 | `POST /instruments/refresh-quotes` | any authenticated user, rate-limited 6/min per IP |
+| `POST /instruments/sync-history` | any authenticated user, rate-limited 2/min per IP |
 | `/transactions/*`, `/positions/*`, `/reports/*` | any authenticated user, **scoped to themselves** |
 | `/users/*` | admin |
 

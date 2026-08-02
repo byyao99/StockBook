@@ -24,6 +24,7 @@ import (
 type QuoteProvider interface {
 	Fetch(ctx context.Context, ticker string) (quotes.Quote, error)
 	Search(ctx context.Context, query string) ([]quotes.SearchResult, error)
+	History(ctx context.Context, ticker string, from, to time.Time) (quotes.History, error)
 }
 
 // InstrumentHandler handles the instrument master data.

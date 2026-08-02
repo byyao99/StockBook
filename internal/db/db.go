@@ -104,6 +104,7 @@ func Open(dsn string) (*DB, error) {
 		&models.Instrument{},
 		&models.Transaction{},
 		&models.Position{},
+		&models.DailyClose{},
 	); err != nil {
 		return nil, err
 	}

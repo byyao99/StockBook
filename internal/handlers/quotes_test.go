@@ -26,6 +26,14 @@ type stubFetcher struct {
 	calls     []string
 	results   []quotes.SearchResult
 	searchErr error
+	// history is served by ticker for the sync tests; historyErr overrides it.
+	// A ticker with neither staged comes back as an empty series, which is what
+	// the provider returns for a window containing no sessions.
+	history    map[string]quotes.History
+	historyErr map[string]error
+	// historyCalls records the window each ticker was asked for, so the tests
+	// can pin down that a top-up requests a narrow range rather than the lot.
+	historyCalls []historyCall
 	// permissive answers for any ticker whose market this system models,
 	// deriving the exchange from the suffix. Creating an instrument now requires
 	// a quotable ticker, so tests that add one through the API need a provider
@@ -40,6 +48,29 @@ func (s *stubFetcher) Search(_ context.Context, _ string) ([]quotes.SearchResult
 		return nil, s.searchErr
 	}
 	return s.results, nil
+}
+
+// historyCall is one recorded request for a range of daily closes.
+type historyCall struct {
+	ticker   string
+	from, to string
+}
+
+// History serves whatever the test staged, recording the window it was asked
+// for. No test ever reaches the network.
+func (s *stubFetcher) History(_ context.Context, ticker string, from, to time.Time) (quotes.History, error) {
+	s.historyCalls = append(s.historyCalls, historyCall{
+		ticker: ticker,
+		from:   from.UTC().Format(time.DateOnly),
+		to:     to.UTC().Format(time.DateOnly),
+	})
+	if err, ok := s.historyErr[ticker]; ok {
+		return quotes.History{}, err
+	}
+	if h, ok := s.history[ticker]; ok {
+		return h, nil
+	}
+	return quotes.History{Currency: synthesizeQuote(ticker).Currency}, nil
 }
 
 func (s *stubFetcher) Fetch(_ context.Context, ticker string) (quotes.Quote, error) {
