@@ -8,7 +8,7 @@ import {
   formatCompactCents,
   formatPercent,
   formatPercentOrUnknown,
-  bpsToZhe,
+  bpsToListPercent,
   formatPpmPercent,
   formatQty,
   formatSignedCents,
@@ -16,7 +16,7 @@ import {
   fromCents,
   percentToPpm,
   ppmToPercent,
-  zheToBps,
+  listPercentToBps,
   toCents,
 } from './money'
 
@@ -177,17 +177,17 @@ describe('parts per million', () => {
   })
 })
 
-describe('broker discount in 折', () => {
-  it('converts between the stored basis points and the 折 a broker quotes', () => {
-    expect(bpsToZhe(2800)).toBe(2.8)
-    expect(bpsToZhe(10000)).toBe(10)
-    expect(zheToBps(2.8)).toBe(2800)
-    expect(zheToBps(6)).toBe(6000)
+describe('broker discount as a percentage of list', () => {
+  it('converts between the stored basis points and the percentage shown', () => {
+    expect(bpsToListPercent(2800)).toBe(28)
+    expect(bpsToListPercent(10000)).toBe(100)
+    expect(listPercentToBps(28)).toBe(2800)
+    expect(listPercentToBps(60)).toBe(6000)
   })
 
-  it('round-trips', () => {
-    for (const bps of [1000, 2800, 3300, 5000, 6500, 10000]) {
-      expect(zheToBps(bpsToZhe(bps))).toBe(bps)
+  it('round-trips every discount a broker is likely to quote', () => {
+    for (let bps = 100; bps <= 10000; bps += 100) {
+      expect(listPercentToBps(bpsToListPercent(bps))).toBe(bps)
     }
   })
 

@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { instrumentApi, settingsApi, transactionApi } from '../api/client'
 import {
-  bpsToZhe,
+  bpsToListPercent,
   formatCents,
   formatPpmPercent,
   formatQty,
@@ -219,7 +219,7 @@ const feeHint = computed(() => {
   } else {
     rate += ` ${formatPpmPercent(effectiveRatePpm(profile))}`
     if (profile.discount_bps > 0 && profile.discount_bps < 10000) {
-      rate += ` (${formatPpmPercent(profile.rate_ppm)} at ${bpsToZhe(profile.discount_bps)} 折)`
+      rate += ` (${formatPpmPercent(profile.rate_ppm)} at ${bpsToListPercent(profile.discount_bps)}% of list)`
     }
   }
   if (form.side === 'sell' && profile.sell_tax_ppm > 0) {

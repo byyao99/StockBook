@@ -5,7 +5,7 @@ import { currentUser, setSession } from '../session'
 import { FEE_PROFILE_LABELS, chargeMode, effectiveRatePpm, profileCurrency } from '../feeMath'
 import type { FeeChargeMode } from '../feeMath'
 import {
-  bpsToZhe,
+  bpsToListPercent,
   currencySymbol,
   formatCents,
   formatPpmPercent,
@@ -13,7 +13,7 @@ import {
   percentToPpm,
   ppmToPercent,
   toCents,
-  zheToBps,
+  listPercentToBps,
 } from '../money'
 import type { FeeProfile, FeeProfileKey } from '../types'
 
@@ -76,11 +76,11 @@ interface FeeRow {
   // `min_fee` because the formula treats them identically.
   amountUnits: number
   sellTaxPercent: number
-  // The broker's discount in 折, or null for none. It is edited apart from the
-  // rate because that is how it is quoted — a discount off the standard
-  // commission, not a rate of its own — and an empty field says "full price"
-  // more plainly than a 10 would.
-  discountZhe: number | null
+  // The broker's discount as the percentage of the listed commission actually
+  // paid, or null for none. It is edited apart from the rate because that is how
+  // it is quoted — a discount off the standard commission, not a rate of its
+  // own — and an empty field says "full price" more plainly than a 100 would.
+  discountPercent: number | null
 }
 
 function toRow(p: FeeProfile): FeeRow {
@@ -90,7 +90,7 @@ function toRow(p: FeeProfile): FeeRow {
     ratePercent: ppmToPercent(p.rate_ppm),
     amountUnits: fromCents(p.min_fee),
     sellTaxPercent: ppmToPercent(p.sell_tax_ppm),
-    discountZhe: p.discount_bps > 0 ? bpsToZhe(p.discount_bps) : null,
+    discountPercent: p.discount_bps > 0 ? bpsToListPercent(p.discount_bps) : null,
   }
 }
 
@@ -105,7 +105,7 @@ function effectiveRateLabel(row: FeeRow): string {
       rate_ppm: percentToPpm(row.ratePercent || 0),
       min_fee: 0,
       sell_tax_ppm: 0,
-      discount_bps: row.discountZhe ? zheToBps(row.discountZhe) : 0,
+      discount_bps: row.discountPercent ? listPercentToBps(row.discountPercent) : 0,
     }),
   )
 }
@@ -131,7 +131,7 @@ function chargedLabel(row: FeeRow): string {
 function applyMode(row: FeeRow) {
   if (row.mode === 'flat') {
     row.ratePercent = 0
-    row.discountZhe = null
+    row.discountPercent = null
   }
 }
 
@@ -161,7 +161,7 @@ async function saveFees() {
         rate_ppm: r.mode === 'flat' ? 0 : percentToPpm(r.ratePercent),
         min_fee: toCents(r.amountUnits),
         sell_tax_ppm: percentToPpm(r.sellTaxPercent),
-        discount_bps: r.mode === 'flat' || !r.discountZhe ? 0 : zheToBps(r.discountZhe),
+        discount_bps: r.mode === 'flat' || !r.discountPercent ? 0 : listPercentToBps(r.discountPercent),
       })),
     )
     // Adopt what came back rather than keeping what was typed: the server is
@@ -247,7 +247,7 @@ onMounted(loadFees)
                 <th>Trade type</th>
                 <th>Charged as</th>
                 <th class="num">Commission</th>
-                <th class="num">Discount</th>
+                <th class="num">Discount (% of list)</th>
                 <th class="num">Works out to</th>
                 <th class="num">Minimum</th>
                 <th class="num">Sell tax</th>
@@ -279,22 +279,22 @@ onMounted(loadFees)
                     <input v-model.number="row.amountUnits" type="number" min="0" step="0.01" />
                   </div>
                 </td>
-                <!-- Blank means full price. Ten 折 is no discount, so the field
-                     is left empty rather than pre-filled with a 10 nobody
-                     would think to type. A fixed charge has no list rate behind
-                     it, so there is nothing to discount. -->
+                <!-- Blank means full price. A hundred percent of list is no
+                     discount at all, so the field is left empty rather than
+                     pre-filled with a 100 nobody would think to type. A fixed
+                     charge has no list rate behind it, so nothing to discount. -->
                 <td class="num">
                   <div v-if="row.mode === 'rate'" class="cell">
                     <input
-                      v-model.number="row.discountZhe"
+                      v-model.number="row.discountPercent"
                       type="number"
-                      min="0.1"
-                      max="10"
-                      step="0.1"
+                      min="1"
+                      max="100"
+                      step="1"
                       placeholder="—"
                       class="narrow"
                     />
-                    <span class="unit">折</span>
+                    <span class="unit">%</span>
                   </div>
                   <span v-else class="muted">—</span>
                 </td>
@@ -325,10 +325,11 @@ onMounted(loadFees)
       <p class="hint muted left">
         A row charges either a percentage of the trade or a fixed amount per
         trade — set whichever your broker quotes. On a percentage row, the
-        discount is what your broker takes off the listed commission: leave it
-        blank for full price, or enter 2.8 for a 2.8 折 rate. It applies to the
-        commission alone — the minimum is a floor on what you actually pay, and
-        the sell tax is set by the government, so neither is discounted.
+        discount is how much of the listed commission you actually pay: leave it
+        blank for full price, or enter 28 if your broker charges 28% of the list
+        rate. It applies to the commission alone — the minimum is a floor on
+        what you actually pay, and the sell tax is set by the government, so
+        neither is discounted.
         A savings plan is a regular scheduled purchase, which usually carries its
         own rate. Sell tax is charged on sales only — in Taiwan it is the
         securities transaction tax, which is 0.1% for an ETF and 0.3% otherwise.

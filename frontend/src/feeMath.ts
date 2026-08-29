@@ -43,7 +43,8 @@ export function discountFactor(profile: FeeProfile): number {
  * broker's discount.
  *
  * The result need not be a whole ppm, and is deliberately not rounded: 0.1425%
- * at 3.3 折 is 470.25 ppm, and rounding it to 470 before it ever meets a trade
+ * at 33% of list is 470.25 ppm, and rounding it to 470 before it ever meets a
+ * trade
  * would throw away precision the money can still use. This figure is for
  * display; `estimateFee` multiplies from the stored parts and rounds once.
  */
@@ -107,8 +108,8 @@ export function defaultProfileKey(
  * and a sale's proceeds are net of both.
  *
  * Everything is multiplied at full precision and rounded once, at the end. The
- * effective rate is frequently not a whole part per million — 0.1425% at 3.3 折
- * is 470.25 — so rounding the rate first would lose accuracy the trade could
+ * effective rate is frequently not a whole part per million — 0.1425% at 33% of
+ * list is 470.25 — so rounding the rate first would lose accuracy the trade could
  * otherwise have kept.
  *
  * Returns null rather than 0 whenever the answer is unknown, following the rule
@@ -169,7 +170,7 @@ export type FeeChargeMode = 'rate' | 'flat'
  *
  * Not every broker quotes a rate. A flat "US$3 an ETF trade, US$0.1 a scheduled
  * purchase" is common, and so is a plain 0.08% with no discount behind it — a
- * 折 is one way terms are expressed, not the only one.
+ * discount off a list rate is one way terms are expressed, not the only one.
  *
  * The mode is **derived, never stored**, because a flat fee is already the
  * degenerate case of the general formula: with a zero rate,

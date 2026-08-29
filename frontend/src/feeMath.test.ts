@@ -140,7 +140,7 @@ describe('profileCurrency', () => {
 
 describe('broker discount', () => {
   // A discounted profile keeps the list rate on file and multiplies at use. The
-  // Taiwanese 2.8 折 on the standard 0.1425% is 0.0399%.
+  // A 28%-of-list discount on the standard 0.1425% is 0.0399%.
   it('multiplies the commission and nothing else', () => {
     const discounted: FeeProfile = {
       key: 'tw_stock', rate_ppm: 1425, min_fee: 100, sell_tax_ppm: 3000, discount_bps: 2800,
@@ -151,7 +151,7 @@ describe('broker discount', () => {
     expect(estimateFee(discounted, 'sell', 1000, 58500)).toBe(23342 + 175500)
   })
 
-  // 0.1425% at 3.3 折 is 470.25 parts per million — not a whole one. Rounding
+  // 0.1425% at 33% of list is 470.25 parts per million — not a whole one. Rounding
   // the rate before it met the trade would lose precision the money can keep,
   // so the multiplication runs at full precision and only the fee is rounded.
   it('does not round the rate, only the money', () => {
@@ -186,7 +186,7 @@ describe('broker discount', () => {
     expect(estimateFee(legacy, 'buy', 1000, 58500)).toBe(83363)
   })
 
-  it('treats ten 折 as full price', () => {
+  it('treats a hundred percent of list as full price', () => {
     const full: FeeProfile = {
       key: 'tw_stock', rate_ppm: 1425, min_fee: 0, sell_tax_ppm: 0, discount_bps: 10000,
     }
@@ -196,7 +196,7 @@ describe('broker discount', () => {
 
 // Not every broker quotes a rate. Cathay charges US$3 an ETF trade and US$0.10
 // a scheduled purchase whatever the size, and 0.08% flat on a US share with no
-// 折 behind it. All three have to be expressible, and the first two are the
+// discount behind it. All three have to be expressible, and the first two are the
 // degenerate case of the shared formula: a zero rate leaves the minimum as the
 // whole charge.
 describe('a fixed charge per trade', () => {

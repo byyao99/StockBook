@@ -426,12 +426,13 @@ export interface FeeProfile {
   sell_tax_ppm: number
   /**
    * The fraction of the list commission actually paid, in basis points: 10000
-   * is full price and 2800 is the Taiwanese "2.8 折". **Zero means no discount,
+   * is full price and 2800 means 28% of the listed rate. **Zero means no discount,
    * not a free trade.**
    *
    * It is kept apart from `rate_ppm` because that is how a broker quotes the
    * charge — a discount off the standard 0.1425%, not a rate of its own — and
-   * because the product frequently is not a rate at all: 0.1425% at 3.3 折 is
+   * because the product frequently is not a rate at all: 0.1425% at 33% of
+   * list is
    * 0.047025%, or 470.25 parts per million. Multiplying at full precision and
    * rounding once, on the money, is what keeps that exact.
    */

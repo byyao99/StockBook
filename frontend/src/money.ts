@@ -123,7 +123,8 @@ export function formatBpsMagnitudeOrUnknown(bps: number | null): string {
  * not render as "0.3000%".
  *
  * It accepts a fractional ppm, because an effective rate is a stored rate times
- * a discount and need not land on a whole one: 0.1425% at 3.3 折 is 470.25 ppm.
+ * a discount and need not land on a whole one: 0.1425% at 33% of list is
+ * 470.25 ppm.
  */
 export function formatPpmPercent(ppm: number): string {
   const percent = (ppm / 10000).toFixed(6).replace(/\.?0+$/, '')
@@ -131,16 +132,16 @@ export function formatPpmPercent(ppm: number): string {
 }
 
 /**
- * Convert a stored discount in basis points to the Taiwanese 折, e.g.
- * 2800 -> 2.8. Ten 折 is full price.
+ * Convert a stored discount in basis points to the percentage of the listed
+ * commission actually paid, e.g. 2800 -> 28. A hundred is full price.
  */
-export function bpsToZhe(bps: number): number {
-  return bps / 1000
+export function bpsToListPercent(bps: number): number {
+  return bps / 100
 }
 
-/** Convert an edited 折 back to basis points, e.g. 2.8 -> 2800. */
-export function zheToBps(zhe: number): number {
-  return Math.round(zhe * 1000)
+/** Convert an edited percentage of list back to basis points, e.g. 28 -> 2800. */
+export function listPercentToBps(percent: number): number {
+  return Math.round(percent * 100)
 }
 
 /** Convert parts per million to a percentage for editing, e.g. 1425 -> 0.1425. */
