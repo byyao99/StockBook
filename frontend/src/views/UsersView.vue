@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { userApi } from '../api/client'
 import { currentUser } from '../session'
+import { UNKNOWN } from '../money'
 import PaginationBar from '../components/PaginationBar.vue'
 import { ROLES } from '../types'
 import type { AuthUser, Role } from '../types'
@@ -120,8 +121,18 @@ async function remove(user: AuthUser) {
   }
 }
 
-function formatTime(iso?: string): string {
-  return iso ? new Date(iso).toLocaleString() : '—'
+/**
+ * The UTC calendar day a timestamp falls on.
+ *
+ * `toLocaleString()` was rendering this in the reader's own locale, which on a
+ * Taiwanese machine wrote the date as 2026/7/25 and the meridiem in Chinese —
+ * a stray script in an otherwise English UI, and a different string on every
+ * visitor's machine. Slicing the ISO date is what every other timestamp here
+ * does (the ledger's trade dates, a quote's as-of), so the whole app speaks one
+ * calendar: UTC, the one the server stores in.
+ */
+function formatDate(iso?: string): string {
+  return iso ? iso.slice(0, 10) : UNKNOWN
 }
 
 onMounted(load)
@@ -184,7 +195,7 @@ onMounted(load)
                 <option v-for="r in ROLES" :key="r" :value="r">{{ r }}</option>
               </select>
             </td>
-            <td>{{ formatTime(user.created_at) }}</td>
+            <td>{{ formatDate(user.created_at) }}</td>
             <td class="row-actions">
               <template v-if="resettingId === user.id">
                 <input
