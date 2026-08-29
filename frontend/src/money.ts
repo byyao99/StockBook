@@ -80,3 +80,35 @@ export function formatPercentOrUnknown(fraction: number | null): string {
 export function formatBpsOrUnknown(bps: number | null): string {
   return bps === null ? UNKNOWN : formatPercent(bps / 10000)
 }
+
+/**
+ * A short label for a cent amount, e.g. 123456789 -> "NT$1.23M".
+ *
+ * Only for axis grid labels, which have to fit in the margin beside a plot —
+ * "NT$1,234,567.89" does not, and a chart whose y-axis is unreadable is worse
+ * than one rounded to three significant figures. The exact amount is never more
+ * than a hover away.
+ */
+export function formatCompactCents(cents: number, currency?: Currency): string {
+  const units = cents / 100
+  const magnitude = Math.abs(units)
+  const sign = units < 0 ? '-' : ''
+  const symbol = currencySymbol(currency)
+  if (magnitude >= 1e9) return `${sign}${symbol}${(magnitude / 1e9).toFixed(2)}B`
+  if (magnitude >= 1e6) return `${sign}${symbol}${(magnitude / 1e6).toFixed(2)}M`
+  if (magnitude >= 1e3) return `${sign}${symbol}${(magnitude / 1e3).toFixed(1)}K`
+  return `${sign}${symbol}${magnitude.toFixed(0)}`
+}
+
+/**
+ * Format a basis-point figure that has a size but no direction, e.g. 1599 ->
+ * "15.99%".
+ *
+ * A maximum drawdown is a depth rather than a movement: it is reported as a
+ * positive number because it only ever measures a fall. Running it through the
+ * signed formatter would print the worst loss a book ever took as "+15.99%",
+ * which reads as a gain.
+ */
+export function formatBpsMagnitudeOrUnknown(bps: number | null): string {
+  return bps === null ? UNKNOWN : `${(Math.abs(bps) / 100).toFixed(2)}%`
+}

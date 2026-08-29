@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { reportApi } from '../api/client'
+import { instrumentApi, reportApi } from '../api/client'
 import {
   UNKNOWN,
+  formatBpsMagnitudeOrUnknown,
+  formatBpsOrUnknown,
   formatCents,
   formatPercentOrUnknown,
   formatQty,
   formatSignedCents,
 } from '../money'
-import type { HindsightSummary, RealizedSummary } from '../types'
+import EquityCurveChart from '../components/EquityCurveChart.vue'
+import type { CurrencyCurve, HindsightSummary, RealizedSummary, SyncResult } from '../types'
 
 // How many years back the quick picker offers. A ledger older than this is
 // still reachable through the date fields; the buttons are for the years
@@ -20,8 +23,18 @@ const summaries = ref<RealizedSummary[]>([])
 // It shares the period picker because it asks about the same entries; unlike
 // the realized figures it is always measured against today's quote.
 const hindsight = ref<HindsightSummary[]>([])
+// The book's own daily history. It shares the picker too, but not on the same
+// terms: the whole ledger is always folded, and the bounds only decide which
+// sessions are drawn — narrowing to last month still shows holdings bought
+// years ago, where the two reports below would drop them.
+const curves = ref<CurrencyCurve[]>([])
 const loading = ref(false)
 const error = ref('')
+const success = ref('')
+const syncing = ref(false)
+// Per-symbol history failures, shown for the same reason the quote refresh
+// shows its own: a count with no symbol beside it is not actionable.
+const syncResults = ref<SyncResult[]>([])
 
 // The period, as the inclusive YYYY-MM-DD bounds the API takes. Empty means
 // open-ended, which is how "All time" is expressed.
@@ -61,16 +74,51 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [realized, sells] = await Promise.all([
+    const [realized, sells, history] = await Promise.all([
       reportApi.realized(from.value || undefined, to.value || undefined),
       reportApi.hindsight(from.value || undefined, to.value || undefined),
+      reportApi.curve(from.value || undefined, to.value || undefined),
     ])
     summaries.value = realized
     hindsight.value = sells
+    curves.value = history
   } catch (e) {
     error.value = (e as Error).message
   } finally {
     loading.value = false
+  }
+}
+
+/**
+ * Downloads the daily closes the chart is drawn from.
+ *
+ * The button lives beside the chart rather than with the quote refresh on
+ * Holdings, because an empty chart is where somebody goes looking for it. A
+ * first run downloads years and is genuinely slow; later ones top up a few
+ * sessions each.
+ */
+async function syncHistory() {
+  syncing.value = true
+  error.value = ''
+  success.value = ''
+  syncResults.value = []
+  try {
+    const report = await instrumentApi.syncHistory()
+    // Only the failures are worth listing: the server already leaves untraded
+    // instruments out of `results`, and a successful sync speaks for itself
+    // through the chart appearing.
+    syncResults.value = report.results.filter((r) => r.status === 'failed')
+    const added = report.results.reduce((sum, r) => sum + r.added, 0)
+    const instruments = `${report.synced} ${report.synced === 1 ? 'instrument' : 'instruments'}`
+    success.value = `Synced ${instruments}, ${added} ${added === 1 ? 'session' : 'sessions'} added.`
+    if (report.failed > 0) {
+      success.value += ` ${report.failed} could not be fetched — see below.`
+    }
+    await load()
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    syncing.value = false
   }
 }
 
@@ -117,6 +165,12 @@ function saleCounts(h: HindsightSummary): string {
   return `${sales} · ${formatQty(h.shares_sold)} shares`
 }
 
+/** "128 sessions · 4 holdings" for a curve. */
+function curveCounts(c: CurrencyCurve): string {
+  const sessions = `${formatQty(c.points.length)} ${c.points.length === 1 ? 'session' : 'sessions'}`
+  return `${sessions} · ${c.instruments} ${c.instruments === 1 ? 'holding' : 'holdings'}`
+}
+
 // The year in progress is the one a user opens this page to look at.
 onMounted(() => selectYear(thisYear))
 </script>
@@ -124,6 +178,7 @@ onMounted(() => selectYear(thisYear))
 <template>
   <div>
     <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="success" class="success">{{ success }}</p>
 
     <section class="card period">
       <div class="years">
@@ -153,12 +208,95 @@ onMounted(() => selectYear(thisYear))
     </section>
 
     <p v-if="loading" class="muted">Loading…</p>
-    <p v-else-if="summaries.length === 0" class="muted">
+
+    <!-- The book's own history, first: it is the only section here that shows
+         holdings still open, and the two reports below both look backwards at
+         entries that are already closed. -->
+    <section v-if="!loading" class="history">
+      <div class="section-head">
+        <h2 class="report-title">History</h2>
+        <button class="btn-secondary" :disabled="syncing" @click="syncHistory">
+          {{ syncing ? 'Syncing prices…' : 'Sync prices' }}
+        </button>
+      </div>
+      <p class="muted lede">
+        What the book has been worth, session by session. The dates above choose which sessions are
+        drawn — never what is counted, so a narrow window still includes holdings bought long
+        before it.
+      </p>
+
+      <ul v-if="syncResults.length > 0" class="sync-log">
+        <li v-for="r in syncResults" :key="r.instrument_id">
+          <span class="badge badge-sell">failed</span>
+          <strong>{{ r.symbol }}</strong>
+          <span v-if="r.ticker" class="ticker">looked up as {{ r.ticker }}</span>
+          <span class="muted">{{ r.error }}</span>
+        </li>
+      </ul>
+
+      <p v-if="curves.length === 0" class="muted">
+        There is no history to draw yet. Record a trade, then press Sync prices to download the
+        daily closes the chart is built from.
+      </p>
+
+      <div v-for="c in curves" :key="c.currency" class="currency-block">
+        <h3 class="currency-title">
+          {{ c.currency }}
+          <span class="muted">· {{ periodLabel }} · {{ curveCounts(c) }}</span>
+        </h3>
+
+        <!-- An empty curve explains itself in the server's own words. Drawing a
+             flat line at zero instead would read as a book that went nowhere. -->
+        <p v-if="c.points.length === 0" class="notice">
+          {{ c.unavailable || 'There is nothing to draw for this period.' }}
+        </p>
+
+        <template v-else>
+          <EquityCurveChart :curve="c" :currency="c.currency" />
+
+          <div class="cards curve-stats">
+            <div class="stat">
+              <span class="stat-label">Time-weighted</span>
+              <strong class="stat-value" :class="plClass(c.twr_bps ?? 0)">
+                {{ formatBpsOrUnknown(c.twr_bps) }}
+              </strong>
+              <span class="muted stat-note">over this period, contributions divided out</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Annualized</span>
+              <strong class="stat-value" :class="plClass(c.annualized_bps ?? 0)">
+                {{ formatBpsOrUnknown(c.annualized_bps) }}
+              </strong>
+              <span class="muted stat-note">the same return stated as a yearly rate</span>
+            </div>
+            <div class="stat">
+              <!-- A drawdown is a depth, not a movement: it is reported as a
+                   positive number and must never render with a leading "+". -->
+              <span class="stat-label">Max drawdown</span>
+              <strong class="stat-value" :class="(c.max_drawdown_bps ?? 0) > 0 ? 'loss' : ''">
+                {{ formatBpsMagnitudeOrUnknown(c.max_drawdown_bps) }}
+              </strong>
+              <span class="muted stat-note">deepest fall below its own high-water mark</span>
+            </div>
+          </div>
+        </template>
+
+        <p v-if="c.without_history > 0" class="notice">
+          {{ c.without_history }}
+          {{ c.without_history === 1 ? 'holding is' : 'holdings are' }}
+          left out of this curve — the stored prices do not reach back to when
+          {{ c.without_history === 1 ? 'it was' : 'they were' }} first traded, and counting
+          {{ c.without_history === 1 ? 'it' : 'them' }} short would look like a real drawdown.
+          Press Sync prices to fill the gap.
+        </p>
+      </div>
+    </section>
+
+    <h2 v-if="!loading" class="report-title realized-title">Realized</h2>
+    <p v-if="!loading && summaries.length === 0" class="muted">
       Nothing was sold and no dividend was paid in this period, so there is nothing realized to
       report.
     </p>
-
-    <h2 v-if="!loading && summaries.length > 0" class="report-title">Realized</h2>
 
     <!-- One block per currency, never a combined figure: there is no exchange
          rate in this system, so a TWD gain and a USD gain cannot be added. -->
@@ -390,12 +528,57 @@ onMounted(() => selectYear(thisYear))
 .currency-block {
   margin-bottom: 24px;
 }
-/* Two reports share this page, so each says which one it is. */
+/* Three sections share this page, so each says which one it is. */
 .report-title {
   font-size: 18px;
   font-weight: 600;
   color: #0f172a;
   margin: 0 0 10px;
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.section-head .report-title {
+  margin: 0;
+}
+.section-head button {
+  width: auto;
+}
+.history {
+  margin-bottom: 32px;
+}
+/* The chart's own figures sit under it rather than beside it: they describe the
+   line above, and a reader arrives at them by looking down from it. */
+.curve-stats {
+  margin-top: 12px;
+}
+.sync-log {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+.sync-log li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+.ticker {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #475569;
+}
+.realized-title {
+  margin-top: 32px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 20px;
 }
 .hindsight {
   margin-top: 32px;

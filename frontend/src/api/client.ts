@@ -4,6 +4,7 @@ import { clearSession, getToken } from '../session'
 import type {
   AuthResponse,
   AuthUser,
+  CurrencyCurve,
   Instrument,
   InstrumentCandidate,
   InstrumentInput,
@@ -14,6 +15,7 @@ import type {
   RefreshReport,
   ReturnsSummary,
   Role,
+  SyncReport,
   Transaction,
   TransactionEdit,
   TransactionInput,
@@ -157,6 +159,11 @@ export const instrumentApi = {
   // caller sees exactly which tickers are wrong and what the provider said.
   refreshQuotes: () =>
     request<RefreshReport>('/instruments/refresh-quotes', { method: 'POST' }),
+  // Downloads the daily closes the equity curve is drawn from. Only traded
+  // instruments are fetched, and only from the day they were first traded, so a
+  // run is proportional to the book rather than to the master data. A first run
+  // downloads years and is slow; later ones top up a few sessions.
+  syncHistory: () => request<SyncReport>('/instruments/sync-history', { method: 'POST' }),
 }
 
 export interface TransactionFilter {
@@ -218,4 +225,11 @@ export const reportApi = {
   // happily, since the comparison is always against today's quote.
   hindsight: (from?: string, to?: string) =>
     request<HindsightSummary[]>(`/reports/hindsight${dateRangeQuery(from, to)}`),
+
+  // The book's own daily history, one entry per currency. Its bounds select
+  // SESSIONS, not trades: the whole ledger is always folded and the window only
+  // decides which days are drawn, so narrowing to last month still shows
+  // holdings bought years ago.
+  curve: (from?: string, to?: string) =>
+    request<CurrencyCurve[]>(`/reports/curve${dateRangeQuery(from, to)}`),
 }

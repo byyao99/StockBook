@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   UNKNOWN,
+  formatBpsMagnitudeOrUnknown,
   formatBpsOrUnknown,
   formatCents,
   formatCentsOrUnknown,
+  formatCompactCents,
   formatPercent,
   formatPercentOrUnknown,
   formatQty,
@@ -113,5 +115,42 @@ describe('formatBpsOrUnknown', () => {
 
   it('marks a rate that could not be computed as unknown', () => {
     expect(formatBpsOrUnknown(null)).toBe(UNKNOWN)
+  })
+})
+
+describe('formatBpsMagnitudeOrUnknown', () => {
+  it('reports a depth without a sign', () => {
+    // The signed formatter would print the worst fall a book ever took as
+    // "+15.99%", which reads as a gain — this is the whole reason it exists.
+    expect(formatBpsMagnitudeOrUnknown(1599)).toBe('15.99%')
+  })
+
+  it('reads a drawdown that arrived negative as the same depth', () => {
+    expect(formatBpsMagnitudeOrUnknown(-1599)).toBe('15.99%')
+  })
+
+  it('shows a book that never fell as zero, not as unknown', () => {
+    expect(formatBpsMagnitudeOrUnknown(0)).toBe('0.00%')
+  })
+
+  it('marks an unmeasurable drawdown as unknown', () => {
+    expect(formatBpsMagnitudeOrUnknown(null)).toBe(UNKNOWN)
+  })
+})
+
+describe('formatCompactCents', () => {
+  it('shortens amounts to fit an axis margin', () => {
+    expect(formatCompactCents(123_456_789, 'TWD')).toBe('NT$1.23M')
+    expect(formatCompactCents(500_000, 'USD')).toBe('$5.0K')
+    expect(formatCompactCents(1_234_567_890_00)).toBe('$1.23B')
+  })
+
+  it('leaves small amounts unscaled', () => {
+    expect(formatCompactCents(45_600)).toBe('$456')
+  })
+
+  it('keeps the sign on a negative amount', () => {
+    // Money in can go negative once more has been taken out than put in.
+    expect(formatCompactCents(-500_000)).toBe('-$5.0K')
   })
 })

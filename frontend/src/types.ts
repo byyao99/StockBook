@@ -276,6 +276,72 @@ export interface ReturnsSummary {
   priced_positions: number
 }
 
+// CurvePoint is one trading session in the book's own history.
+//
+// `market_value` and `net_invested` are both money and share a scale; the gap
+// between them is the gain. Neither is a return — a book that doubles its
+// contributions doubles its market value without having earned anything, so
+// `index` is the figure that answers performance.
+export interface CurvePoint {
+  date: string
+  market_value: number
+  net_invested: number
+  // A notional 100 (as 10000 minor units, like every other amount) chained from
+  // the daily returns with contributions divided out. Saving harder must not
+  // look like skill.
+  index: number
+}
+
+// CurrencyCurve is one currency's daily history plus the figures derived from
+// it. One per currency, like every other total here.
+export interface CurrencyCurve {
+  currency: Currency
+  points: CurvePoint[]
+  // Time-weighted return over the window: what a single unit of money left
+  // alone in this book would have earned. Deliberately not the same question as
+  // ReturnsSummary.xirr_bps, which weights every dollar by how long it was in.
+  twr_bps: number | null
+  annualized_bps: number | null
+  // The deepest peak-to-trough fall of the index, as a POSITIVE number: 2500
+  // means the book was once 25% below its high-water mark. It is a depth, not a
+  // movement, so it must never render with a leading "+".
+  max_drawdown_bps: number | null
+  instruments: number
+  // Instruments left out entirely for want of stored prices covering the days
+  // they were held. Counting one short would understate the book for every day
+  // before its prices begin, which looks exactly like a real drawdown.
+  without_history: number
+  // Why the curve is empty, in words. Empty when there are points. A book with
+  // no stored history reads as "sync prices", never as a flat line at zero.
+  unavailable?: string
+}
+
+// The outcome of one instrument in a price-history sync.
+export interface SyncResult {
+  instrument_id: string
+  symbol: string
+  ticker?: string
+  status: 'synced' | 'skipped' | 'failed'
+  // The window actually requested, which tells an incremental top-up from a
+  // first full download.
+  from?: string
+  to?: string
+  // Sessions written by this call, against how many the instrument holds now. A
+  // run that adds nothing but already holds years is healthy, and only the
+  // second number says so.
+  added: number
+  sessions: number
+  error?: string
+}
+
+export interface SyncReport {
+  synced: number
+  failed: number
+  // Instruments with nothing to fetch — never traded, so no history is needed.
+  skipped: number
+  results: SyncResult[]
+}
+
 // A candidate returned by the instrument search, already carrying the exact
 // values that would be stored — so adding one types nothing and can mistype
 // nothing. `exists` flags a symbol already in the master data.

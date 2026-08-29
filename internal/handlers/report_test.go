@@ -328,3 +328,145 @@ func TestHindsightReportRejectsAMalformedDate(t *testing.T) {
 		t.Errorf("got %d, want 400", rec.Code)
 	}
 }
+
+// seedCloses stores a run of consecutive daily closes for an instrument,
+// starting on the given day. The curve can only be drawn over sessions it has
+// prices for, so every curve test has to put some there first.
+func (e *testEnv) seedCloses(t *testing.T, instrumentID string, start time.Time, closes ...int64) {
+	t.Helper()
+	rows := make([]models.DailyClose, 0, len(closes))
+	for i, close := range closes {
+		rows = append(rows, models.DailyClose{
+			Date:  start.AddDate(0, 0, i).UTC().Format(time.DateOnly),
+			Close: close,
+		})
+	}
+	if err := e.s.SaveDailyCloses(instrumentID, rows); err != nil {
+		t.Fatalf("SaveDailyCloses: %v", err)
+	}
+}
+
+// The curve reports one point per stored session, with the index chained from
+// the daily returns and the market value beside it.
+func TestCurveReportEndpoint(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "charter", models.RoleUser)
+	inst := e.seedInstrument(t, "2330", nil)
+
+	buy := tradePayload(inst.ID, models.SideBuy, 100, 10000, tradedOn(2025, time.March, 3))
+	if rec := e.do(t, http.MethodPost, "/api/v1/transactions", buy, token); rec.Code != http.StatusCreated {
+		t.Fatalf("buy: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	// Three sessions rising 100.00 -> 110.00 -> 120.00.
+	e.seedCloses(t, inst.ID, tradedOn(2025, time.March, 3), 10000, 11000, 12000)
+
+	var report []db.CurrencyCurve
+	rec := e.do(t, http.MethodGet,
+		"/api/v1/reports/curve?from=2025-03-03&to=2025-03-05", nil, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("curve: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decodeData(t, rec, &report)
+
+	if len(report) != 1 {
+		t.Fatalf("got %d currencies, want 1: %+v", len(report), report)
+	}
+	got := report[0]
+	if got.Unavailable != "" {
+		t.Fatalf("curve reports itself unavailable: %q", got.Unavailable)
+	}
+	if len(got.Points) != 3 {
+		t.Fatalf("got %d points, want 3: %+v", len(got.Points), got.Points)
+	}
+
+	// The first session anchors the index at its base and reports no return,
+	// there being no previous close to measure one against.
+	want := []db.CurvePoint{
+		{Date: "2025-03-03", MarketValue: 1000000, NetInvested: 1000000, Index: 10000},
+		{Date: "2025-03-04", MarketValue: 1100000, NetInvested: 1000000, Index: 11000},
+		{Date: "2025-03-05", MarketValue: 1200000, NetInvested: 1000000, Index: 12000},
+	}
+	for i, w := range want {
+		if got.Points[i] != w {
+			t.Errorf("point %d = %+v, want %+v", i, got.Points[i], w)
+		}
+	}
+
+	// +20% on the index over the window, and never below its own high-water mark.
+	if got.TWRBps == nil || *got.TWRBps != 2000 {
+		t.Errorf("twr %v, want 2000 bps", got.TWRBps)
+	}
+	if got.MaxDrawdownBps == nil || *got.MaxDrawdownBps != 0 {
+		t.Errorf("drawdown %v, want 0", got.MaxDrawdownBps)
+	}
+	if got.Instruments != 1 || got.WithoutHistory != 0 {
+		t.Errorf("instruments=%d without_history=%d, want 1 and 0", got.Instruments, got.WithoutHistory)
+	}
+}
+
+// A holding with no stored prices leaves the curve entirely rather than being
+// valued at zero, and the response has to say so in words — an empty chart that
+// explains nothing reads as a book that went nowhere.
+func TestCurveReportExplainsAnEmptyCurve(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "unsynced", models.RoleUser)
+	inst := e.seedInstrument(t, "2330", nil)
+
+	buy := tradePayload(inst.ID, models.SideBuy, 100, 10000, tradedOn(2025, time.March, 3))
+	if rec := e.do(t, http.MethodPost, "/api/v1/transactions", buy, token); rec.Code != http.StatusCreated {
+		t.Fatalf("buy: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	// Deliberately no closes stored.
+
+	var report []db.CurrencyCurve
+	rec := e.do(t, http.MethodGet, "/api/v1/reports/curve", nil, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("curve: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decodeData(t, rec, &report)
+
+	if len(report) != 1 {
+		t.Fatalf("got %d currencies, want 1: %+v", len(report), report)
+	}
+	got := report[0]
+	if len(got.Points) != 0 {
+		t.Errorf("got %d points, want none: %+v", len(got.Points), got.Points)
+	}
+	if got.WithoutHistory != 1 {
+		t.Errorf("without_history = %d, want 1", got.WithoutHistory)
+	}
+	if got.Unavailable == "" {
+		t.Error("an empty curve must explain itself, so the UI can say what to do about it")
+	}
+}
+
+// A ledger is personal, and so is the curve drawn from one.
+func TestCurveReportDoesNotLeakAnotherBook(t *testing.T) {
+	e := setup(t)
+	owner := e.token(t, "owner", models.RoleUser)
+	admin := e.token(t, "admin", models.RoleAdmin)
+	inst := e.seedInstrument(t, "2330", nil)
+
+	buy := tradePayload(inst.ID, models.SideBuy, 100, 10000, tradedOn(2025, time.March, 3))
+	e.do(t, http.MethodPost, "/api/v1/transactions", buy, owner)
+	e.seedCloses(t, inst.ID, tradedOn(2025, time.March, 3), 10000, 11000)
+
+	var report []db.CurrencyCurve
+	rec := e.do(t, http.MethodGet, "/api/v1/reports/curve", nil, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decodeData(t, rec, &report)
+	if len(report) != 0 {
+		t.Errorf("admin sees another user's curve: %+v", report)
+	}
+}
+
+func TestCurveReportRejectsAMalformedDate(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "charter", models.RoleUser)
+	rec := e.do(t, http.MethodGet, "/api/v1/reports/curve?from=whenever", nil, token)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("got %d, want 400", rec.Code)
+	}
+}
