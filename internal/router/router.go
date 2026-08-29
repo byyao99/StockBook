@@ -30,6 +30,7 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 	transaction := handlers.NewTransactionHandler(s)
 	position := handlers.NewPositionHandler(s)
 	report := handlers.NewReportHandler(s)
+	settings := handlers.NewSettingsHandler(s)
 
 	// Health check (also verifies the database connection).
 	//
@@ -138,6 +139,14 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 			rep.GET("/returns", report.Returns)
 			rep.GET("/hindsight", report.Hindsight)
 			rep.GET("/curve", report.Curve)
+		}
+
+		// A user's own preferences, not master data: any authenticated caller,
+		// scoped to themselves, on the same footing as changing their password.
+		set := v1.Group("/settings", middleware.RequireAuth(am, s))
+		{
+			set.GET("/fees", settings.FeeProfiles)
+			set.PUT("/fees", settings.SaveFeeProfiles)
 		}
 	}
 

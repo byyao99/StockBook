@@ -112,3 +112,43 @@ export function formatCompactCents(cents: number, currency?: Currency): string {
 export function formatBpsMagnitudeOrUnknown(bps: number | null): string {
   return bps === null ? UNKNOWN : `${(Math.abs(bps) / 100).toFixed(2)}%`
 }
+
+/**
+ * Format a rate given in parts per million as a plain percentage, e.g.
+ * 1425 -> "0.1425%".
+ *
+ * A fee rate has a size but no direction, and it needs more precision than the
+ * basis-point formatters give: 0.1425% is 14.25 basis points, which is why fee
+ * rates cross the wire in ppm at all. Trailing zeros are trimmed so 0.3% does
+ * not render as "0.3000%".
+ *
+ * It accepts a fractional ppm, because an effective rate is a stored rate times
+ * a discount and need not land on a whole one: 0.1425% at 3.3 折 is 470.25 ppm.
+ */
+export function formatPpmPercent(ppm: number): string {
+  const percent = (ppm / 10000).toFixed(6).replace(/\.?0+$/, '')
+  return `${percent}%`
+}
+
+/**
+ * Convert a stored discount in basis points to the Taiwanese 折, e.g.
+ * 2800 -> 2.8. Ten 折 is full price.
+ */
+export function bpsToZhe(bps: number): number {
+  return bps / 1000
+}
+
+/** Convert an edited 折 back to basis points, e.g. 2.8 -> 2800. */
+export function zheToBps(zhe: number): number {
+  return Math.round(zhe * 1000)
+}
+
+/** Convert parts per million to a percentage for editing, e.g. 1425 -> 0.1425. */
+export function ppmToPercent(ppm: number): number {
+  return ppm / 10000
+}
+
+/** Convert an edited percentage back to parts per million, e.g. 0.1425 -> 1425. */
+export function percentToPpm(percent: number): number {
+  return Math.round(percent * 10000)
+}

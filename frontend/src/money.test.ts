@@ -8,10 +8,15 @@ import {
   formatCompactCents,
   formatPercent,
   formatPercentOrUnknown,
+  bpsToZhe,
+  formatPpmPercent,
   formatQty,
   formatSignedCents,
   formatSignedOrUnknown,
   fromCents,
+  percentToPpm,
+  ppmToPercent,
+  zheToBps,
   toCents,
 } from './money'
 
@@ -152,5 +157,44 @@ describe('formatCompactCents', () => {
   it('keeps the sign on a negative amount', () => {
     // Money in can go negative once more has been taken out than put in.
     expect(formatCompactCents(-500_000)).toBe('-$5.0K')
+  })
+})
+
+describe('parts per million', () => {
+  // 0.1425% is 14.25 basis points, which is why fee rates are stored in ppm at
+  // all — a basis point cannot hold the most common rate in this book.
+  it('formats a rate without a sign, trimming trailing zeros', () => {
+    expect(formatPpmPercent(1425)).toBe('0.1425%')
+    expect(formatPpmPercent(3000)).toBe('0.3%')
+    expect(formatPpmPercent(0)).toBe('0%')
+    expect(formatPpmPercent(10000)).toBe('1%')
+  })
+
+  it('round-trips through the editing scale', () => {
+    for (const ppm of [0, 1, 399, 1000, 1425, 1500, 3000, 100000]) {
+      expect(percentToPpm(ppmToPercent(ppm))).toBe(ppm)
+    }
+  })
+})
+
+describe('broker discount in 折', () => {
+  it('converts between the stored basis points and the 折 a broker quotes', () => {
+    expect(bpsToZhe(2800)).toBe(2.8)
+    expect(bpsToZhe(10000)).toBe(10)
+    expect(zheToBps(2.8)).toBe(2800)
+    expect(zheToBps(6)).toBe(6000)
+  })
+
+  it('round-trips', () => {
+    for (const bps of [1000, 2800, 3300, 5000, 6500, 10000]) {
+      expect(zheToBps(bpsToZhe(bps))).toBe(bps)
+    }
+  })
+
+  // An effective rate is a list rate times a discount and need not land on a
+  // whole part per million.
+  it('formats a fractional effective rate', () => {
+    expect(formatPpmPercent(470.25)).toBe('0.047025%')
+    expect(formatPpmPercent(399)).toBe('0.0399%')
   })
 })

@@ -732,3 +732,80 @@ func TestSearchSurfacesAProviderFailure(t *testing.T) {
 		t.Errorf("body %s should carry the provider's wording", rec.Body.String())
 	}
 }
+
+// An instrument records what the provider says it is, so the trade form can
+// tell an ETF apart from an ordinary share later. Nothing enforced this before:
+// the type was consulted once by IsHoldable and then discarded.
+func TestCreateRecordsAssetType(t *testing.T) {
+	stub := &stubFetcher{quotes: map[string]quotes.Quote{
+		"VOO": {Price: 5000000, Currency: models.CurrencyUSD, AsOf: time.Now(),
+			Name: "Vanguard S&P 500 ETF", Exchange: "PCX", Type: "ETF"},
+	}}
+	e := setupWithFetcher(t, stub)
+	tok := e.token(t, "alice", models.RoleUser)
+
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments",
+		map[string]any{"symbol": "VOO", "market": "NYSE"}, tok)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got models.Instrument
+	decodeData(t, rec, &got)
+	if got.AssetType != "ETF" {
+		t.Errorf("AssetType = %q, want %q", got.AssetType, "ETF")
+	}
+}
+
+// A refresh fills in a classification an instrument does not have yet. This is
+// how rows created before the column existed get one, without the server
+// reaching for the network to boot.
+func TestRefreshBackfillsAssetType(t *testing.T) {
+	stub := &stubFetcher{quotes: map[string]quotes.Quote{
+		"0050.TW": {Price: 19000, Currency: models.CurrencyTWD, AsOf: time.Now(),
+			Name: "Yuanta Taiwan Top 50 ETF", Exchange: "TAI", Type: "ETF"},
+	}}
+	e := setupWithFetcher(t, stub)
+	tok := e.token(t, "alice", models.RoleUser)
+	item := e.seedInstrument(t, "0050", nil)
+	if item.AssetType != "" {
+		t.Fatalf("seeded AssetType = %q, want empty", item.AssetType)
+	}
+
+	if _, code := e.refresh(t, tok); code != http.StatusOK {
+		t.Fatalf("refresh = %d, want 200", code)
+	}
+	after, err := e.s.GetInstrument(item.ID)
+	if err != nil {
+		t.Fatalf("GetInstrument: %v", err)
+	}
+	if after.AssetType != "ETF" {
+		t.Errorf("AssetType = %q, want %q after a refresh", after.AssetType, "ETF")
+	}
+}
+
+// A refresh never reclassifies. An EQUITY does not become an ETF, so a provider
+// that changes its mind is an inconsistency rather than news — and adopting it
+// would silently change which fee profile every later trade suggests.
+func TestRefreshDoesNotOverwriteAssetType(t *testing.T) {
+	stub := &stubFetcher{quotes: map[string]quotes.Quote{
+		"2330.TW": {Price: 100000, Currency: models.CurrencyTWD, AsOf: time.Now(),
+			Name: "TSMC", Exchange: "TAI", Type: "ETF"},
+	}}
+	e := setupWithFetcher(t, stub)
+	tok := e.token(t, "alice", models.RoleUser)
+	item := e.seedInstrument(t, "2330", nil)
+	if err := e.s.SetInstrumentAssetType(item.ID, "EQUITY"); err != nil {
+		t.Fatalf("SetInstrumentAssetType: %v", err)
+	}
+
+	if _, code := e.refresh(t, tok); code != http.StatusOK {
+		t.Fatalf("refresh = %d, want 200", code)
+	}
+	after, err := e.s.GetInstrument(item.ID)
+	if err != nil {
+		t.Fatalf("GetInstrument: %v", err)
+	}
+	if after.AssetType != "EQUITY" {
+		t.Errorf("AssetType = %q, want it left at EQUITY", after.AssetType)
+	}
+}

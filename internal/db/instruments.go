@@ -189,3 +189,22 @@ func (d *DB) DeleteInstrument(id string) error {
 		return nil
 	})
 }
+
+// SetInstrumentAssetType records what an instrument is on one that has no
+// classification yet, and refuses to overwrite one that does.
+//
+// It refuses for the same reason SetInstrumentCurrency does, though the stakes
+// are lower: an EQUITY does not become an ETF, so a differing answer from the
+// provider is a provider inconsistency rather than news, and adopting it would
+// silently change which fee profile every future trade in that instrument
+// suggests. An empty kind writes nothing — "the provider did not say" is not a
+// classification, and storing it would close the row to the next refresh that
+// might actually know.
+func (d *DB) SetInstrumentAssetType(id, kind string) error {
+	if kind == "" {
+		return nil
+	}
+	return d.db.Model(&models.Instrument{}).
+		Where("id = ? AND (asset_type IS NULL OR asset_type = '')", id).
+		Update("asset_type", kind).Error
+}

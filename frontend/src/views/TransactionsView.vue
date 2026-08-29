@@ -1,16 +1,41 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { instrumentApi, transactionApi } from '../api/client'
-import { formatCents, formatQty, formatSignedOrUnknown, fromCents, toCents } from '../money'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { instrumentApi, settingsApi, transactionApi } from '../api/client'
+import {
+  bpsToZhe,
+  formatCents,
+  formatPpmPercent,
+  formatQty,
+  formatSignedOrUnknown,
+  fromCents,
+  toCents,
+} from '../money'
+import {
+  FEE_PROFILE_LABELS,
+  chargeMode,
+  defaultProfileKey,
+  effectiveRatePpm,
+  estimateFee,
+  findProfile,
+  profileCurrency,
+} from '../feeMath'
 import PaginationBar from '../components/PaginationBar.vue'
 import InstrumentPicker from '../components/InstrumentPicker.vue'
-import { SIDES } from '../types'
-import type { Currency, Instrument, Transaction, TransactionSide } from '../types'
+import { FEE_PROFILE_KEYS, SIDES } from '../types'
+import type {
+  Currency,
+  FeeProfile,
+  FeeProfileKey,
+  Instrument,
+  Transaction,
+  TransactionSide,
+} from '../types'
 
 const PAGE_SIZE = 20
 
 const entries = ref<Transaction[]>([])
 const instruments = ref<Instrument[]>([])
+const feeProfiles = ref<FeeProfile[]>([])
 const total = ref(0)
 const offset = ref(0)
 const loading = ref(false)
@@ -22,22 +47,41 @@ const sideFilter = ref<TransactionSide | ''>('')
 
 const editingId = ref<string | null>(null)
 
+/**
+ * Whether the user has typed into the price or fee field themselves.
+ *
+ * Once either is true nothing auto-fills it again. A figure copied off a
+ * contract note is always more correct than an estimate, and silently
+ * overwriting it as the form recomputes would be both wrong and maddening.
+ */
+const priceTouched = ref(false)
+const feeTouched = ref(false)
+
 // The form edits dollars; the API speaks cents. The conversion happens here at
 // the UI edge and nowhere else.
+//
+// The three numeric fields start null rather than 0 so they render empty. A
+// zero has to be deleted before anything can be typed over it, which is a small
+// friction paid on every single entry, and a fee left at 0 is a claim that the
+// trade was free.
 const form = reactive<{
   instrumentId: string
   side: TransactionSide
-  quantity: number
-  priceDollars: number
-  feeDollars: number
+  quantity: number | null
+  priceDollars: number | null
+  feeDollars: number | null
+  feeProfileKey: FeeProfileKey | ''
+  recurring: boolean
   tradedAt: string
   note: string
 }>({
   instrumentId: '',
   side: 'buy',
-  quantity: 0,
-  priceDollars: 0,
-  feeDollars: 0,
+  quantity: null,
+  priceDollars: null,
+  feeDollars: null,
+  feeProfileKey: '',
+  recurring: false,
   tradedAt: today(),
   note: '',
 })
@@ -46,13 +90,34 @@ function today(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+/**
+ * Turns the chosen date into the instant the entry is stored at.
+ *
+ * A bare date is sent as midday UTC so that a timezone shift cannot push the
+ * trade into a different day than the one picked. But noon UTC is 20:00 in
+ * Taipei, so a trade entered today at any normal hour would be stamped hours
+ * ahead of now, and the server refuses a future entry outright — which made
+ * today's trades unrecordable before the evening.
+ *
+ * Clamping to now fixes that without reintroducing the drift, because the date
+ * input is capped at the UTC date: whenever noon UTC is still ahead, now is
+ * necessarily on that same UTC day, so the entry keeps the day it was given.
+ */
+function tradedAtInstant(date: string): string {
+  const noon = new Date(`${date}T12:00:00Z`)
+  const now = new Date()
+  return (noon > now ? now : noon).toISOString()
+}
+
 const isDividend = computed(() => form.side === 'dividend')
+
+const selectedInstrument = computed(() => instruments.value.find((i) => i.id === form.instrumentId))
 
 // A preview of the cash movement, computed the same way the server will. It is
 // shown for the user's benefit only — the stored figure is always the server's.
 const netPreview = computed(() => {
-  const gross = form.quantity * toCents(form.priceDollars)
-  const fee = toCents(form.feeDollars)
+  const gross = (form.quantity ?? 0) * toCents(form.priceDollars ?? 0)
+  const fee = toCents(form.feeDollars ?? 0)
   return form.side === 'buy' ? gross + fee : gross - fee
 })
 
@@ -63,15 +128,116 @@ const previewLabel = computed(() => {
 
 // The currency of whichever instrument the form is pointed at, so amounts are
 // labelled correctly rather than all wearing a bare "$".
-const formCurrency = computed<Currency | undefined>(
-  () => instruments.value.find((i) => i.id === form.instrumentId)?.currency,
-)
+const formCurrency = computed<Currency | undefined>(() => selectedInstrument.value?.currency)
 
 // Ledger rows carry only an instrument id, so the currency is looked up from
 // the loaded master data; an instrument since deleted simply shows unlabelled.
 function currencyOf(instrumentId: string): Currency | undefined {
   return instruments.value.find((i) => i.id === instrumentId)?.currency
 }
+
+/**
+ * Suggests the price a trade filled at, which is only knowable for one today.
+ *
+ * `last_price` is the instrument's current quote, so it answers "what is this
+ * worth now?" and nothing else. Offering it for a back-dated entry would write
+ * today's price into a trade made last year — the same silent corruption as
+ * leaving the fee at zero, and harder to spot afterwards. The field is cleared
+ * instead, and the hint asks for the figure off the contract note.
+ */
+function applyPriceSuggestion() {
+  if (editingId.value || priceTouched.value) return
+  const inst = selectedInstrument.value
+  if (!inst || inst.last_price === null || form.tradedAt !== today()) {
+    form.priceDollars = null
+    return
+  }
+  form.priceDollars = fromCents(inst.last_price)
+}
+
+function applyFeeEstimate() {
+  if (editingId.value || feeTouched.value) return
+  const estimate = estimateFee(
+    findProfile(feeProfiles.value, form.feeProfileKey),
+    form.side,
+    form.quantity ?? 0,
+    toCents(form.priceDollars ?? 0),
+  )
+  form.feeDollars = estimate === null ? null : fromCents(estimate)
+}
+
+/** Puts the fee back under the profile's control after a hand-typed figure. */
+function recalculateFee() {
+  feeTouched.value = false
+  applyFeeEstimate()
+}
+
+// Choosing a different instrument starts the numbers over: the previous
+// suggestion belonged to a different holding, and a price carried across from
+// one stock to another is worse than an empty field.
+watch(
+  () => form.instrumentId,
+  () => {
+    priceTouched.value = false
+    feeTouched.value = false
+  },
+)
+
+// Which profile applies follows from the instrument, the side and whether this
+// is a scheduled purchase. It is only ever a default — the select stays live so
+// an account on unusual terms, or an ETF the provider called an ordinary share,
+// can be corrected in place.
+watch(
+  [() => form.instrumentId, () => form.side, () => form.recurring],
+  () => {
+    if (editingId.value) return
+    form.feeProfileKey = defaultProfileKey(selectedInstrument.value, form.recurring) ?? ''
+  },
+)
+
+watch([() => form.instrumentId, () => form.tradedAt], applyPriceSuggestion)
+
+watch(
+  [() => form.feeProfileKey, () => form.quantity, () => form.priceDollars, () => form.side],
+  applyFeeEstimate,
+)
+
+/** What the fee field is currently doing, shown under it. */
+const feeHint = computed(() => {
+  if (editingId.value) return ''
+  if (isDividend.value) return 'Withholding is not estimated — enter what was deducted.'
+  if (feeTouched.value) return 'Entered by hand.'
+  const profile = findProfile(feeProfiles.value, form.feeProfileKey)
+  if (!profile) return 'No fee profile applies — enter the fee by hand.'
+  // The terms quoted here are the ones actually charged, after any discount.
+  // The list rate would not explain the number in the field beside it, and a
+  // profile charging a fixed amount has no meaningful rate to quote at all —
+  // rendering its 0% would read as a free trade beside a fee that is not.
+  let rate = FEE_PROFILE_LABELS[profile.key]
+  if (chargeMode(profile) === 'flat') {
+    rate += ` ${formatCents(profile.min_fee, profileCurrency(profile.key))} a trade`
+  } else {
+    rate += ` ${formatPpmPercent(effectiveRatePpm(profile))}`
+    if (profile.discount_bps > 0 && profile.discount_bps < 10000) {
+      rate += ` (${formatPpmPercent(profile.rate_ppm)} at ${bpsToZhe(profile.discount_bps)} 折)`
+    }
+  }
+  if (form.side === 'sell' && profile.sell_tax_ppm > 0) {
+    return `${rate} + ${formatPpmPercent(profile.sell_tax_ppm)} sell tax`
+  }
+  return rate
+})
+
+/** What the price field is currently doing, shown under it. */
+const priceHint = computed(() => {
+  if (editingId.value || priceTouched.value) return ''
+  const inst = selectedInstrument.value
+  if (!inst) return ''
+  if (form.tradedAt !== today()) return 'Enter the price this trade filled at.'
+  if (inst.last_price === null) return 'No quote on file — enter the price it filled at.'
+  const asOf = inst.price_updated_at?.slice(0, 10)
+  return asOf ? `Latest quote, ${asOf} — change it if it filled elsewhere.` : 'Latest quote.'
+})
 
 async function load() {
   loading.value = true
@@ -104,6 +270,17 @@ async function loadInstruments() {
   }
 }
 
+// A failure here is deliberately not surfaced as a page error: the fee estimate
+// is a convenience, and losing it must not look like the ledger is broken. The
+// form falls back to a hand-entered fee, which is what it always was.
+async function loadFeeProfiles() {
+  try {
+    feeProfiles.value = await settingsApi.feeProfiles()
+  } catch {
+    feeProfiles.value = []
+  }
+}
+
 function changePage(newOffset: number) {
   offset.value = newOffset
   load()
@@ -129,12 +306,16 @@ function applyFilter() {
 
 function resetForm() {
   editingId.value = null
+  priceTouched.value = false
+  feeTouched.value = false
   Object.assign(form, {
     instrumentId: '',
     side: 'buy',
-    quantity: 0,
-    priceDollars: 0,
-    feeDollars: 0,
+    quantity: null,
+    priceDollars: null,
+    feeDollars: null,
+    feeProfileKey: '',
+    recurring: false,
     tradedAt: today(),
     note: '',
   })
@@ -142,12 +323,19 @@ function resetForm() {
 
 function startEdit(t: Transaction) {
   editingId.value = t.id
+  // Everything in an existing entry is a recorded fact. Both fields count as
+  // touched so no watcher can overwrite what was actually banked with an
+  // estimate of what it might have been.
+  priceTouched.value = true
+  feeTouched.value = true
   Object.assign(form, {
     instrumentId: t.instrument_id,
     side: t.side,
     quantity: t.quantity,
     priceDollars: fromCents(t.price),
     feeDollars: fromCents(t.fee),
+    feeProfileKey: '',
+    recurring: false,
     tradedAt: t.traded_at.slice(0, 10),
     note: t.note,
   })
@@ -156,15 +344,13 @@ function startEdit(t: Transaction) {
 async function submit() {
   error.value = ''
   success.value = ''
-  // Send a bare date as midday UTC so a timezone shift cannot push the trade
-  // into tomorrow, which the server rejects as a future trade.
-  const tradedAt = new Date(`${form.tradedAt}T12:00:00Z`).toISOString()
+  const tradedAt = tradedAtInstant(form.tradedAt)
   try {
     if (editingId.value) {
       await transactionApi.update(editingId.value, {
-        quantity: form.quantity,
-        price: toCents(form.priceDollars),
-        fee: toCents(form.feeDollars),
+        quantity: form.quantity ?? 0,
+        price: toCents(form.priceDollars ?? 0),
+        fee: toCents(form.feeDollars ?? 0),
         traded_at: tradedAt,
         note: form.note,
       })
@@ -173,9 +359,9 @@ async function submit() {
       await transactionApi.create({
         instrument_id: form.instrumentId,
         side: form.side,
-        quantity: form.quantity,
-        price: toCents(form.priceDollars),
-        fee: toCents(form.feeDollars),
+        quantity: form.quantity ?? 0,
+        price: toCents(form.priceDollars ?? 0),
+        fee: toCents(form.feeDollars ?? 0),
         traded_at: tradedAt,
         note: form.note,
       })
@@ -204,7 +390,7 @@ async function remove(t: Transaction) {
 }
 
 onMounted(async () => {
-  await loadInstruments()
+  await Promise.all([loadInstruments(), loadFeeProfiles()])
   await load()
 })
 </script>
@@ -249,17 +435,60 @@ onMounted(async () => {
             <label>
               {{ isDividend ? 'Per share' : 'Price' }} ({{ formCurrency ?? '—' }})
             </label>
-            <input v-model.number="form.priceDollars" type="number" min="0" step="0.01" required />
+            <input
+              v-model.number="form.priceDollars"
+              type="number"
+              min="0"
+              step="0.01"
+              required
+              @input="priceTouched = true"
+            />
+            <p v-if="priceHint" class="field-hint muted">{{ priceHint }}</p>
           </div>
           <div class="field">
             <label>
               {{ isDividend ? 'Tax withheld' : 'Fees &amp; tax' }} ({{ formCurrency ?? '—' }})
             </label>
-            <input v-model.number="form.feeDollars" type="number" min="0" step="0.01" />
+            <input
+              v-model.number="form.feeDollars"
+              type="number"
+              min="0"
+              step="0.01"
+              @input="feeTouched = true"
+            />
+            <p v-if="feeHint" class="field-hint muted">
+              {{ feeHint }}
+              <button
+                v-if="feeTouched && !isDividend && !editingId && form.feeProfileKey"
+                type="button"
+                class="link-button"
+                @click="recalculateFee"
+              >
+                use the estimate
+              </button>
+            </p>
           </div>
           <div class="field">
             <label>{{ isDividend ? 'Ex-dividend date' : 'Trade date' }}</label>
             <input v-model="form.tradedAt" type="date" :max="today()" required />
+          </div>
+          <!-- The fee basis is a suggestion the user can override: the provider
+               occasionally files an ETF as an ordinary share, and a savings plan
+               is how a trade was made rather than what was traded, so neither is
+               reliably derivable. Hidden for a dividend, whose withholding is a
+               different charge entirely. -->
+          <div v-if="!isDividend && !editingId" class="field">
+            <label>Fee basis</label>
+            <select v-model="form.feeProfileKey" @change="recalculateFee">
+              <option value="">Enter by hand</option>
+              <option v-for="k in FEE_PROFILE_KEYS" :key="k" :value="k">
+                {{ FEE_PROFILE_LABELS[k] }}
+              </option>
+            </select>
+            <label class="checkbox">
+              <input v-model="form.recurring" type="checkbox" />
+              Scheduled purchase
+            </label>
           </div>
         </div>
         <div class="field">
@@ -358,6 +587,34 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
+  align-items: start;
+}
+.field-hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 400;
+}
+.checkbox input {
+  width: auto;
+  margin: 0;
+}
+.link-button {
+  width: auto;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #0d9488;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
 }
 .head {
   display: flex;

@@ -108,13 +108,20 @@ func CanonicalMarket(m string) (string, bool) {
 // provider reported — and drives the staleness a user sees. QuoteCheckedAt is
 // when the provider was last asked, and drives whether asking again is worth
 // the outbound call. A Friday closing price fetched on Monday is a day old to
-// the reader and a moment old to the fetcher, and both readings are correct.
+// AssetType is the provider's own word for what this is ("EQUITY", "ETF"),
+// recorded so the system can tell an ETF from an ordinary share after the fact.
+// It is empty for an instrument created before the column existed and for one
+// the provider did not classify; refreshOne fills those in opportunistically
+// rather than a startup backfill reaching for the network. Nothing depends on
+// it being right — it only picks which fee profile a trade form suggests, which
+// the user can always override.
 type Instrument struct {
 	ID             string     `gorm:"primaryKey" json:"id"`
 	Symbol         string     `gorm:"uniqueIndex" json:"symbol"`
 	Name           string     `json:"name"`
 	Market         string     `json:"market"`
 	Currency       Currency   `gorm:"not null;default:TWD" json:"currency"`
+	AssetType      string     `json:"asset_type"`
 	LastPrice      *int64     `json:"last_price"`
 	PriceUpdatedAt *time.Time `json:"price_updated_at"`
 	QuoteCheckedAt *time.Time `json:"quote_checked_at"`
@@ -244,6 +251,134 @@ type Position struct {
 	RealizedPL   int64     `gorm:"not null;default:0" json:"realized_pl"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// FeeProfileKey names one brokerage arrangement. The set is a small fixed
+// matrix rather than a free-form list because each key has to be derivable from
+// a trade without asking: the market comes from the instrument, stock-vs-ETF
+// from Instrument.AssetType, and only the recurring-purchase plan needs the user
+// to say so on the form.
+type FeeProfileKey string
+
+const (
+	// FeeTWStock is an ordinary Taiwanese share bought outright.
+	FeeTWStock FeeProfileKey = "tw_stock"
+	// FeeTWETF is a Taiwanese ETF, which pays a lower transaction tax on sale.
+	FeeTWETF FeeProfileKey = "tw_etf"
+	// FeeTWRecurring is a Taiwanese regular savings plan, usually charged at a
+	// lower rate with a much lower floor.
+	FeeTWRecurring FeeProfileKey = "tw_recurring"
+	// FeeUSStock is a US share, typically bought through a sub-brokerage.
+	FeeUSStock FeeProfileKey = "us_stock"
+	// FeeUSETF is a US ETF.
+	FeeUSETF FeeProfileKey = "us_etf"
+	// FeeUSRecurring is a US regular savings plan.
+	FeeUSRecurring FeeProfileKey = "us_recurring"
+)
+
+// FeeProfileKeys lists every key in the order settings are displayed.
+var FeeProfileKeys = []FeeProfileKey{
+	FeeTWStock, FeeTWETF, FeeTWRecurring,
+	FeeUSStock, FeeUSETF, FeeUSRecurring,
+}
+
+// Valid reports whether k is a known fee profile.
+func (k FeeProfileKey) Valid() bool {
+	for _, known := range FeeProfileKeys {
+		if k == known {
+			return true
+		}
+	}
+	return false
+}
+
+// MaxFeeRatePpm caps a configured rate at 10%.
+//
+// The ceiling catches a grossly misplaced decimal — 142500 where 1425 was
+// meant — because that failure is otherwise silent: nothing downstream looks
+// wrong, the cost basis simply drifts, and the book reports a worse year than
+// it had. It deliberately does not try to catch a factor-of-ten slip. A sub-
+// brokerage really can charge over 1%, so no ceiling can tell 1.425% from a
+// mistyped 0.1425% without also refusing rates people genuinely pay. What it
+// can do is refuse a number no brokerage on earth charges.
+const MaxFeeRatePpm int64 = 100_000
+
+// FeeProfile is one user's fee arrangement for one kind of trade.
+//
+// Rates are parts per million, not basis points. Every other rate in this
+// system crosses the wire as integer basis points and for the same reasons —
+// integers do not drift, and the rounding is decided in one place — but a basis
+// point cannot express 0.1425%, which is the standard Taiwanese commission and
+// the single most common rate this book will ever hold. Parts per million is
+// the next scale down that keeps every rate in use an exact integer: 0.1425% is
+// 1425, the 0.3% transaction tax is 3000.
+//
+// The discount multiplies the commission and nothing else. MinFee is a floor on
+// what is actually paid, so it applies after the discount; SellTaxPpm is levied
+// by the government and no broker can discount it.
+//
+// MinFee is int64 minor units, in the currency the profile's market trades in —
+// which the key implies, since TWD and USD amounts are never added anywhere in
+// this system. SellTaxPpm is charged on sales only; it is Taiwan's securities
+// transaction tax, which is levied on the proceeds rather than by the broker,
+// but lands in the same Transaction.Fee field because that field records what
+// the trade cost in total.
+//
+// The composite primary key is what makes saving idempotent, the same way
+// DailyClose's is: settings are written as a whole set and must update in place
+// rather than accumulate a row per save.
+//
+// These rows are deliberately absent for a user who has never opened the
+// settings page. DefaultFeeProfiles supplies the values in that case, merged at
+// read time rather than written at registration — writing would freeze one
+// day's defaults into every account created before they were revised, and it
+// would also destroy the only signal that distinguishes a user who genuinely
+// trades commission-free (a stored RatePpm of 0) from one who has never said.
+type FeeProfile struct {
+	UserID     string        `gorm:"primaryKey" json:"-"`
+	Key        FeeProfileKey `gorm:"primaryKey" json:"key"`
+	RatePpm    int64         `json:"rate_ppm"`
+	MinFee     int64         `json:"min_fee"`
+	SellTaxPpm int64         `json:"sell_tax_ppm"`
+	// DiscountBps is the fraction of the list commission actually paid, in
+	// basis points: 10000 is full price and 2800 is the Taiwanese "2.8 折".
+	//
+	// It is a separate field rather than folded into RatePpm because that is how
+	// the charge is actually quoted — a broker advertises a discount off the
+	// standard 0.1425%, not a rate of its own — and because the product often
+	// is not expressible as a rate at all: 0.1425% at 3.3 折 is 0.047025%, which
+	// is 470.25 parts per million. Keeping the two apart lets the multiplication
+	// happen at full precision and the rounding happen once, on the money.
+	//
+	// Zero means no discount, not a free trade. A column added by AutoMigrate
+	// leaves every existing row at zero, and reading that as "multiply by nought"
+	// would silently make every past profile commission-free; a user who really
+	// pays nothing sets RatePpm to 0 instead, which says so directly.
+	DiscountBps int64 `json:"discount_bps"`
+	// The timestamps stay out of the JSON. A profile the user has never saved is
+	// synthesized from the defaults at read time and has no timestamps to report;
+	// serializing the zero value would date it to the year 1.
+	CreatedAt time.Time `json:"-"`
+	UpdatedAt time.Time `json:"-"`
+}
+
+// DefaultFeeProfiles returns the starting rates for a user who has not set
+// their own, in FeeProfileKeys order.
+//
+// They are ordinary Taiwanese retail terms: 0.1425% commission with a NT$20
+// floor, plus a 0.3% securities transaction tax on sale which drops to 0.1% for
+// an ETF. The US figures are sub-brokerage terms, where the tax does not apply.
+// Every one of them is negotiable in practice, which is exactly why they are a
+// per-user setting and not a constant.
+func DefaultFeeProfiles() []FeeProfile {
+	return []FeeProfile{
+		{Key: FeeTWStock, RatePpm: 1425, MinFee: 2000, SellTaxPpm: 3000},
+		{Key: FeeTWETF, RatePpm: 1425, MinFee: 2000, SellTaxPpm: 1000},
+		{Key: FeeTWRecurring, RatePpm: 1000, MinFee: 100, SellTaxPpm: 3000},
+		{Key: FeeUSStock, RatePpm: 1500, MinFee: 1500, SellTaxPpm: 0},
+		{Key: FeeUSETF, RatePpm: 1500, MinFee: 1500, SellTaxPpm: 0},
+		{Key: FeeUSRecurring, RatePpm: 1500, MinFee: 100, SellTaxPpm: 0},
+	}
 }
 
 // equalFold reports whether a and b are equal ignoring ASCII case. Kept local so

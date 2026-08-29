@@ -5,6 +5,8 @@ import type {
   AuthResponse,
   AuthUser,
   CurrencyCurve,
+  FeeProfile,
+  FeeProfileInput,
   Instrument,
   InstrumentCandidate,
   InstrumentInput,
@@ -232,4 +234,20 @@ export const reportApi = {
   // holdings bought years ago.
   curve: (from?: string, to?: string) =>
     request<CurrencyCurve[]>(`/reports/curve${dateRangeQuery(from, to)}`),
+}
+
+// A user's own preferences. Scoped to the caller by the server, so there is no
+// id in any of these paths.
+export const settingsApi = {
+  // Always returns the full set of profiles, with whatever the user has saved
+  // laid over the defaults — a first visit renders usable rates rather than six
+  // blank fields.
+  feeProfiles: () => request<FeeProfile[]>('/settings/fees'),
+
+  // Saves any subset; profiles left out keep whatever they had.
+  saveFeeProfiles: (profiles: FeeProfileInput[]) =>
+    request<FeeProfile[]>('/settings/fees', {
+      method: 'PUT',
+      body: JSON.stringify({ profiles }),
+    }),
 }

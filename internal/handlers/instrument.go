@@ -175,6 +175,7 @@ func (h *InstrumentHandler) Create(c *gin.Context) {
 		Name:           name,
 		Market:         req.Market,
 		Currency:       quote.Currency,
+		AssetType:      quote.Type,
 		LastPrice:      &quote.Price,
 		PriceUpdatedAt: &quote.AsOf,
 		QuoteCheckedAt: &now,
@@ -528,6 +529,18 @@ func (h *InstrumentHandler) refreshOne(ctx context.Context, item models.Instrume
 			result.Error = err.Error()
 			return result
 		}
+	}
+
+	// Fill in a classification the instrument does not have yet. This is where
+	// rows created before the column existed get one: a refresh already has the
+	// provider on the line, so learning what an instrument is costs nothing
+	// extra, and doing it here rather than in a startup backfill keeps the
+	// server from reaching for the network to boot. It writes only into an empty
+	// value, so a refresh never reclassifies anything.
+	if err := h.db.SetInstrumentAssetType(item.ID, quote.Type); err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		return result
 	}
 
 	price := quote.Price

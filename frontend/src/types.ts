@@ -39,6 +39,10 @@ export interface Instrument {
   // Fixed once trades exist against the instrument: changing it would
   // reinterpret every cost basis already recorded under it.
   currency: Currency
+  // The provider's own word for what this is ("EQUITY", "ETF"), or "" when it
+  // never said or the row predates the column. Only used to pick which fee
+  // profile the trade form suggests, which is always overridable.
+  asset_type: string
   // The quote, fetched or maintained by hand. null means no quote has been set,
   // which the UI must show as unknown rather than as zero.
   last_price: number | null
@@ -379,3 +383,62 @@ export interface RefreshReport {
   fresh: number
   results: RefreshResult[]
 }
+
+// One brokerage fee arrangement. The set of keys is a fixed matrix rather than
+// a free-form list because each one has to be derivable from a trade without
+// asking: the market comes from the instrument, stock-vs-ETF from its
+// asset_type, and only the recurring-purchase plan needs the user to say so.
+export type FeeProfileKey =
+  | 'tw_stock'
+  | 'tw_etf'
+  | 'tw_recurring'
+  | 'us_stock'
+  | 'us_etf'
+  | 'us_recurring'
+
+// Display order, mirroring models.FeeProfileKeys.
+export const FEE_PROFILE_KEYS: FeeProfileKey[] = [
+  'tw_stock',
+  'tw_etf',
+  'tw_recurring',
+  'us_stock',
+  'us_etf',
+  'us_recurring',
+]
+
+/**
+ * A fee profile as the API speaks it.
+ *
+ * Rates are **parts per million, not basis points**. Every other rate here
+ * crosses the wire as integer basis points and for the same reasons, but a
+ * basis point cannot express 0.1425% — the standard Taiwanese commission, and
+ * the most common rate this book will hold. Parts per million is the next scale
+ * down that keeps every rate in use an exact integer: 0.1425% is 1425, and the
+ * 0.3% securities transaction tax is 3000.
+ *
+ * `min_fee` is integer minor units in the currency that profile's market trades
+ * in, which the key implies. `sell_tax_ppm` applies to sales only.
+ */
+export interface FeeProfile {
+  key: FeeProfileKey
+  rate_ppm: number
+  min_fee: number
+  sell_tax_ppm: number
+  /**
+   * The fraction of the list commission actually paid, in basis points: 10000
+   * is full price and 2800 is the Taiwanese "2.8 折". **Zero means no discount,
+   * not a free trade.**
+   *
+   * It is kept apart from `rate_ppm` because that is how a broker quotes the
+   * charge — a discount off the standard 0.1425%, not a rate of its own — and
+   * because the product frequently is not a rate at all: 0.1425% at 3.3 折 is
+   * 0.047025%, or 470.25 parts per million. Multiplying at full precision and
+   * rounding once, on the money, is what keeps that exact.
+   */
+  discount_bps: number
+}
+
+// What the settings page sends. The same shape as FeeProfile — every field is
+// required, because an omitted rate binding to 0 would read as "this broker is
+// free", which is a claim rather than a blank.
+export type FeeProfileInput = FeeProfile

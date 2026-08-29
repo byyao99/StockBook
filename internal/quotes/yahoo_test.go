@@ -380,3 +380,31 @@ func TestSearchReportsAProviderFailure(t *testing.T) {
 		t.Errorf("error %v should carry the provider's status", err)
 	}
 }
+
+// A recorded response for 0050.TW, the largest Taiwanese ETF. The provider
+// classifies a Taiwanese ETF as an ETF just as it does a US one, which is what
+// lets the fee estimate charge the 0.1% transaction tax an ETF sale pays rather
+// than the 0.3% an ordinary share does. That correspondence is worth a test
+// because nothing else would notice it silently changing: the sale would simply
+// be recorded as costing three times too much.
+const yuantaBody = `{"chart":{"result":[{"meta":{"symbol":"0050.TW","currency":"TWD",
+	"regularMarketPrice":58.35,"regularMarketTime":1784871010,
+	"exchangeName":"TAI","instrumentType":"ETF"}}],"error":null}}`
+
+func TestFetchClassifiesATaiwaneseETF(t *testing.T) {
+	c := serve(t, http.StatusOK, yuantaBody)
+
+	q, err := c.Fetch(context.Background(), "0050.TW")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if q.Type != "ETF" {
+		t.Errorf("type = %q, want ETF", q.Type)
+	}
+	if q.Exchange != "TAI" || q.Currency != models.CurrencyTWD {
+		t.Errorf("exchange = %q currency = %q, want TAI and TWD", q.Exchange, q.Currency)
+	}
+	if !IsHoldable(q.Type) {
+		t.Error("a Taiwanese ETF must be holdable")
+	}
+}
