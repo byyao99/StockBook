@@ -467,28 +467,30 @@ onMounted(async () => {
                 use the estimate
               </button>
             </p>
+            <!-- The basis lives inside this field rather than in a grid cell of
+                 its own: it decides the number in the input directly above it,
+                 and anywhere else in an auto-fit grid it lands columns away from
+                 what it controls. It is a suggestion the user can override — the
+                 provider occasionally files an ETF as an ordinary share, and a
+                 savings plan is how a trade was made rather than what was
+                 traded, so neither is reliably derivable. Hidden for a dividend,
+                 whose withholding is a different charge entirely. -->
+            <div v-if="!isDividend && !editingId" class="fee-basis">
+              <select v-model="form.feeProfileKey" aria-label="Fee basis" @change="recalculateFee">
+                <option value="">Enter by hand</option>
+                <option v-for="k in FEE_PROFILE_KEYS" :key="k" :value="k">
+                  {{ FEE_PROFILE_LABELS[k] }}
+                </option>
+              </select>
+              <label class="checkbox">
+                <input v-model="form.recurring" type="checkbox" />
+                Scheduled purchase
+              </label>
+            </div>
           </div>
           <div class="field">
             <label>{{ isDividend ? 'Ex-dividend date' : 'Trade date' }}</label>
             <input v-model="form.tradedAt" type="date" :max="today()" required />
-          </div>
-          <!-- The fee basis is a suggestion the user can override: the provider
-               occasionally files an ETF as an ordinary share, and a savings plan
-               is how a trade was made rather than what was traded, so neither is
-               reliably derivable. Hidden for a dividend, whose withholding is a
-               different charge entirely. -->
-          <div v-if="!isDividend && !editingId" class="field">
-            <label>Fee basis</label>
-            <select v-model="form.feeProfileKey" @change="recalculateFee">
-              <option value="">Enter by hand</option>
-              <option v-for="k in FEE_PROFILE_KEYS" :key="k" :value="k">
-                {{ FEE_PROFILE_LABELS[k] }}
-              </option>
-            </select>
-            <label class="checkbox">
-              <input v-model="form.recurring" type="checkbox" />
-              Scheduled purchase
-            </label>
           </div>
         </div>
         <div class="field">
@@ -593,6 +595,23 @@ onMounted(async () => {
   margin: 4px 0 0;
   font-size: 11px;
   line-height: 1.4;
+}
+/* The fee basis and the savings-plan flag share one line under the fee field.
+   Both wrap on a narrow column rather than forcing the grid wider. */
+.fee-basis {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.fee-basis select {
+  flex: 1 1 130px;
+  padding: 5px 6px;
+  font-size: 12px;
+}
+.fee-basis .checkbox {
+  margin-top: 0;
 }
 .checkbox {
   display: flex;
