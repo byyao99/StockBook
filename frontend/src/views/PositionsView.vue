@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { instrumentApi, positionApi, reportApi } from '../api/client'
+import { claimAutoRun } from '../autoRefresh'
 import {
   formatBpsOrUnknown,
   formatCents,
@@ -84,25 +85,39 @@ function changePage(newOffset: number) {
 // unrealized profit and loss is what this page is for, and it is only as
 // current as the prices behind it. Quotes newer than a few minutes are left
 // alone by the server, so pressing this repeatedly is cheap.
-async function refreshQuotes() {
+async function refreshQuotes({ automatic = false } = {}) {
   refreshing.value = true
   error.value = ''
   success.value = ''
   refreshResults.value = []
   try {
     const report = await instrumentApi.refreshQuotes()
+    // Per-symbol failures are shown either way. They are the reason this is a
+    // foreground action at all: a delisted ticker is only ever fixed by someone
+    // reading the provider's own wording about it, and the automatic run has a
+    // reader for exactly as long as this page is open.
     refreshResults.value = report.results.filter((r) => r.status !== 'updated')
-    success.value = `Updated ${report.updated} ${report.updated === 1 ? 'quote' : 'quotes'}.`
-    if (report.fresh > 0) {
-      // Without this a no-op refresh looks like a button that does nothing.
-      success.value += ` ${report.fresh} already current.`
-    }
-    if (report.failed > 0) {
-      success.value += ` ${report.failed} could not be fetched — see below.`
+    if (!automatic) {
+      success.value = `Updated ${report.updated} ${report.updated === 1 ? 'quote' : 'quotes'}.`
+      if (report.fresh > 0) {
+        // Without this a no-op refresh looks like a button that does nothing.
+        success.value += ` ${report.fresh} already current.`
+      }
+      if (report.failed > 0) {
+        success.value += ` ${report.failed} could not be fetched — see below.`
+      }
     }
     await load()
   } catch (e) {
-    error.value = (e as Error).message
+    // A run that could not start at all — rate-limited, provider unreachable,
+    // fetching not configured. The button reports it, the automatic attempt
+    // does not: nothing here claims to have succeeded, every price on the page
+    // already carries its own age, and a red banner on arrival for something
+    // the reader did not ask for teaches them to ignore the banner. Pressing
+    // Refresh surfaces the real reason.
+    if (!automatic) {
+      error.value = (e as Error).message
+    }
   } finally {
     refreshing.value = false
   }
@@ -146,7 +161,23 @@ function rateNote(currency: Currency): string {
   return since ? `per year since ${since}` : 'per year'
 }
 
-onMounted(load)
+// Load first, then refresh: the stored book renders immediately and the fresh
+// prices land a moment later, rather than the page waiting on a provider.
+//
+// This is not the background ticker CLAUDE.md rules out. That one is refused
+// because a failed symbol lands in a log nobody reads; this one runs only while
+// somebody is looking at the page it reports into. The server's own freshness
+// window does the deciding, so arriving twice in an afternoon costs one round
+// of provider traffic, and autoRefreshGuard keeps navigation churn from even
+// asking.
+onMounted(async () => {
+  await load()
+  // 60s is far shorter than the server's 15-minute quote window, so this can
+  // only ever suppress an ask that would have been told "all current".
+  if (claimAutoRun('quotes', 60_000)) {
+    await refreshQuotes({ automatic: true })
+  }
+})
 </script>
 
 <template>
@@ -155,7 +186,7 @@ onMounted(load)
     <p v-if="success" class="success">{{ success }}</p>
 
     <div class="page-actions">
-      <button class="btn-secondary" :disabled="refreshing" @click="refreshQuotes">
+      <button class="btn-secondary" :disabled="refreshing" @click="refreshQuotes()">
         {{ refreshing ? 'Fetching quotes…' : 'Refresh quotes' }}
       </button>
     </div>

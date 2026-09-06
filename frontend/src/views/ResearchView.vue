@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { positionApi, researchApi } from '../api/client'
+import { claimAutoRun } from '../autoRefresh'
 import { UNKNOWN, formatCents, formatCompactCents, formatPercentOrUnknown } from '../money'
 import { buildBars, latestReported, periodLabel, valueOf, yoyChange } from '../fundamentalsMath'
 import { formatNewsTime } from '../newsTime'
@@ -162,14 +163,20 @@ function applyFilter() {
 
 watch([selected, cadence], reloadFundamentals)
 
-async function sync() {
+async function sync({ automatic = false } = {}) {
   syncing.value = true
   error.value = ''
   success.value = ''
   syncLog.value = []
   try {
     const report = await researchApi.sync()
-    success.value = describe(report)
+    // Per-source and per-instrument failures are shown either way — they are
+    // the reason this is a foreground action, and the automatic run has a
+    // reader for as long as this page is open. Only the summary is suppressed:
+    // a line saying what happened on every arrival is noise.
+    if (!automatic) {
+      success.value = describe(report)
+    }
     syncLog.value = [
       ...report.news.sources
         .filter((s) => s.status !== 'synced')
@@ -180,7 +187,14 @@ async function sync() {
     ]
     await load()
   } catch (e) {
-    error.value = (e as Error).message
+    // A run that could not start — rate-limited, or a provider unreachable.
+    // The button reports it; the automatic attempt does not. Nothing here
+    // claims to have succeeded, every headline already carries its own age,
+    // and a red banner on arrival for something the reader did not ask for
+    // teaches them to ignore the banner.
+    if (!automatic) {
+      error.value = (e as Error).message
+    }
   } finally {
     syncing.value = false
   }
@@ -256,7 +270,21 @@ function changeClass(metric: FinancialMetric): string {
   return change > 0 ? 'gain' : 'loss'
 }
 
-onMounted(load)
+// Load first, then sync: the stored feed renders immediately and anything new
+// lands a moment later, rather than the page waiting on two providers.
+//
+// This is not the background job CLAUDE.md rules out — it runs only while
+// somebody is looking at the page it reports into. The server's own freshness
+// windows do the deciding (half an hour for headlines, a day for reported
+// figures), so arriving repeatedly costs the providers nothing.
+onMounted(async () => {
+  await load()
+  // 60s keeps tabbing between views from burning this endpoint's 2/min limit,
+  // which would then refuse a sync that had real work to do.
+  if (holdings.value.length > 0 && claimAutoRun('research', 60_000)) {
+    await sync({ automatic: true })
+  }
+})
 </script>
 
 <template>
@@ -265,7 +293,7 @@ onMounted(load)
       <span class="muted">
         {{ holdings.length }} {{ holdings.length === 1 ? 'holding' : 'holdings' }}
       </span>
-      <button class="btn-secondary" :disabled="syncing || holdings.length === 0" @click="sync">
+      <button class="btn-secondary" :disabled="syncing || holdings.length === 0" @click="sync()">
         {{ syncing ? 'Syncing…' : 'Sync' }}
       </button>
     </div>
