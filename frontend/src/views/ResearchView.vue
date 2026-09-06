@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { positionApi, researchApi } from '../api/client'
 import { UNKNOWN, formatCents, formatCompactCents, formatPercentOrUnknown } from '../money'
 import { buildBars, latestReported, periodLabel, valueOf, yoyChange } from '../fundamentalsMath'
@@ -24,20 +25,35 @@ const METRICS: { key: FinancialMetric; label: string; compact: boolean }[] = [
   { key: 'diluted_eps', label: 'Diluted EPS', compact: false },
 ]
 
+// Arriving from a holding on /positions means "tell me about this company", so
+// the query param seeds BOTH controls rather than only the feed: a reader who
+// clicked 2330 wants its headlines and its results, not its headlines beside
+// somebody else's figures.
+//
+// It is a starting point, not a mirror. The controls are independent page state
+// afterwards and the URL is not rewritten as they change — writing back would
+// mean deciding which of the two independent selects owns the one parameter.
+const route = useRoute()
+const arrivedFor = typeof route.query.instrument_id === 'string' ? route.query.instrument_id : ''
+
 const holdings = ref<Position[]>([])
 const articles = ref<NewsArticle[]>([])
 const total = ref(0)
 const offset = ref(0)
-const feedFilter = ref('')
+const feedFilter = ref(arrivedFor)
 
 const periods = ref<FinancialPeriod[]>([])
-const selected = ref('')
+const selected = ref(arrivedFor)
 const cadence = ref<'quarterly' | 'annual'>('quarterly')
 
 const loading = ref(false)
 const syncing = ref(false)
 const error = ref('')
 const success = ref('')
+// Why the page is showing something other than what a link asked for. Not an
+// error — nothing broke and the reader did nothing wrong — so it renders as a
+// notice, like every other "here is why this is not what you expected" case.
+const redirected = ref('')
 // Per-source and per-instrument sync failures. A run that half worked has to say
 // which half, or the counts are not actionable — the same reason the holdings
 // page shows its refresh failures rather than only a number.
@@ -67,6 +83,25 @@ async function load() {
     articles.value = page.items
     total.value = page.pagination.total
     holdings.value = positions.items
+
+    // A link can name a holding this page cannot show — one sold since the link
+    // was made, or an id typed by hand. Falling back is better than leaving a
+    // picker on a value no option carries, which renders as an unexplained
+    // blank; saying so is better still, since the reader asked for something
+    // specific and is about to be shown something else.
+    // The feed above was already fetched under that filter, so clearing it is
+    // not enough — the page would fall back to "all holdings" and show an empty
+    // list. Fetch again with the filter gone. This cannot recurse: the second
+    // pass finds an empty selection and skips the check.
+    if (selected.value !== '' && !holdings.value.some((h) => h.instrument_id === selected.value)) {
+      redirected.value =
+        'The holding that link named is not open, so there is nothing here about it. ' +
+        'Showing the rest of the book instead.'
+      selected.value = ''
+      feedFilter.value = ''
+      await load()
+      return
+    }
 
     // Default the figures panel to the largest holding: it is the one whose
     // results matter most to this book.
@@ -121,6 +156,7 @@ function changePage(newOffset: number) {
 
 function applyFilter() {
   offset.value = 0
+  redirected.value = ''
   load()
 }
 
@@ -236,6 +272,7 @@ onMounted(load)
 
     <p v-if="error" class="error">{{ error }}</p>
     <p v-if="success" class="success">{{ success }}</p>
+    <p v-if="redirected" class="notice">{{ redirected }}</p>
 
     <ul v-if="syncLog.length > 0" class="sync-log">
       <li v-for="entry in syncLog" :key="entry.label + entry.status">

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { instrumentApi, positionApi, reportApi } from '../api/client'
 import {
   formatBpsOrUnknown,
@@ -259,7 +260,18 @@ onMounted(load)
           <tbody>
             <tr v-for="p in positions" :key="p.id" :class="{ closed: p.quantity === 0 }">
               <td>
-                <strong>{{ p.symbol }}</strong>
+                <!-- The symbol links through to what the company itself is
+                     doing. Only an open holding does: the research feed drops
+                     closed ones deliberately, so a link from a sold position
+                     would land on a page with nothing to say about it. -->
+                <RouterLink
+                  v-if="p.quantity > 0"
+                  :to="{ name: 'research', query: { instrument_id: p.instrument_id } }"
+                  class="symbol-link"
+                >
+                  {{ p.symbol }}
+                </RouterLink>
+                <strong v-else>{{ p.symbol }}</strong>
                 <div class="muted">{{ p.name }}</div>
               </td>
               <td class="muted">{{ p.currency }}</td>
@@ -322,6 +334,20 @@ onMounted(load)
   background: #e2e8f0;
   border-radius: 4px;
   padding: 1px 6px;
+}
+/* A faint underline rather than a link colour. Twenty teal symbols would shout
+   over the numbers, which are what the table is for — but with no mark at all
+   the link reads as the bold text it replaced, and nobody finds it. */
+.symbol-link {
+  color: #0f172a;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: #cbd5e1;
+  text-underline-offset: 3px;
+}
+.symbol-link:hover {
+  color: #0d9488;
+  text-decoration-color: #0d9488;
 }
 .currency-block {
   margin-bottom: 20px;
