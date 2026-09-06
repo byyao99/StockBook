@@ -443,3 +443,117 @@ export interface FeeProfile {
 // required, because an omitted rate binding to 0 would read as "this broker is
 // free", which is a claim rather than a blank.
 export type FeeProfileInput = FeeProfile
+
+/**
+ * One headline about a company on the book.
+ *
+ * This is the only thing here that is not a fact about the ledger or derived
+ * from it — it is a pointer to somebody else's writing. `symbols` carries the
+ * holdings the *provider itself* tagged the article with, and only those the
+ * reader actually holds: an article naming three companies of which they own one
+ * arrives with one symbol. Attribution is never inferred from the title, so a
+ * holding shows fewer articles than exist rather than any that are not its own.
+ *
+ * `language` is stored rather than implied by the source, because the feed mixes
+ * them: a Taiwanese holding's news arrives in Chinese and a US one's in English,
+ * and a reader deciding whether to open a link wants to know which.
+ *
+ * `published_at` is the provider's own timestamp, never the moment it was
+ * fetched — a headline stamped with the fetch would sort to the top forever.
+ */
+export interface NewsArticle {
+  id: string
+  source: string
+  title: string
+  summary: string
+  url: string
+  publisher: string
+  language: string
+  published_at: string
+  created_at: string
+  symbols: string[]
+}
+
+// The metrics a reported period can carry. Three, deliberately: ratios built on
+// them are derived here if they are ever wanted, never stored.
+export type FinancialMetric = 'revenue' | 'net_income' | 'diluted_eps'
+
+/**
+ * One reporting period with every figure held for it.
+ *
+ * All three metrics are `number | null` for the usual reason: a period the
+ * provider has no figure for is unknown, not zero. A company that has not
+ * reported its earnings has not earned nothing, and the UI renders a null as an
+ * em dash exactly as it does an unpriced holding.
+ *
+ * Values are integer minor units like every other amount, so revenue is large —
+ * NT$1.05T arrives as 104609044900000. `diluted_eps` is in the same units, so
+ * NT$15.36 a share is 1536.
+ *
+ * `currency` is the currency the company **reported** in, which is not
+ * necessarily the one its shares trade in — an ADR is the ordinary case. Unlike
+ * a quote, that mismatch is not an error: these figures are never added to a
+ * cost basis or a market value, so the only thing owed them is a label. Always
+ * render the currency beside the figure rather than assuming the holding's.
+ *
+ * `period_type` is the provider's own stamp: '3M' for a quarter, '12M' for a
+ * year.
+ */
+export interface FinancialPeriod {
+  as_of_date: string
+  period_type: string
+  currency: Currency
+  revenue: number | null
+  net_income: number | null
+  diluted_eps: number | null
+}
+
+// One news provider's outcome in a sync. Shaped like every other bulk fetch
+// here: a partial failure names what it happened to and carries the provider's
+// own wording, rather than collapsing to a count.
+export interface NewsSourceResult {
+  source: string
+  scope: string
+  status: 'synced' | 'skipped' | 'failed'
+  fetched: number
+  error?: string
+}
+
+// One instrument's outcome in a fundamentals sync. `currency` is what the
+// provider reported in, which is worth seeing precisely because it may differ
+// from the instrument's.
+export interface FactSyncResult {
+  instrument_id: string
+  symbol: string
+  ticker?: string
+  status: 'synced' | 'skipped' | 'failed'
+  currency?: Currency
+  added: number
+  figures: number
+  error?: string
+}
+
+/**
+ * What one research sync did.
+ *
+ * `news.collected` counts the articles the providers returned that concern a
+ * holding, not the rows written: re-reading a feed that overlaps what is stored
+ * is the normal case, and the write ignores what it already has. `fresh` on
+ * either side counts holdings skipped as checked recently enough — on a second
+ * press, all of them.
+ */
+export interface ResearchSyncReport {
+  holdings: number
+  news: {
+    collected: number
+    fresh: number
+    sources: NewsSourceResult[]
+    error?: string
+  }
+  fundamentals: {
+    synced: number
+    failed: number
+    fresh: number
+    results: FactSyncResult[]
+  }
+}

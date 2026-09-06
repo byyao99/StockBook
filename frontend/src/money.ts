@@ -84,16 +84,21 @@ export function formatBpsOrUnknown(bps: number | null): string {
 /**
  * A short label for a cent amount, e.g. 123456789 -> "NT$1.23M".
  *
- * Only for axis grid labels, which have to fit in the margin beside a plot —
- * "NT$1,234,567.89" does not, and a chart whose y-axis is unreadable is worse
- * than one rounded to three significant figures. The exact amount is never more
- * than a hover away.
+ * Only for axis grid labels and reported figures, both of which have to fit in a
+ * narrow column — "NT$1,234,567.89" does not, and an axis that is unreadable is
+ * worse than one rounded to three significant figures. The exact amount is never
+ * more than a hover away.
+ *
+ * The scale runs to trillions because a company's reported revenue reaches them:
+ * TSMC turns over more than NT$1T in a quarter, which the billions tier would
+ * render as "NT$1046.09B".
  */
 export function formatCompactCents(cents: number, currency?: Currency): string {
   const units = cents / 100
   const magnitude = Math.abs(units)
   const sign = units < 0 ? '-' : ''
   const symbol = currencySymbol(currency)
+  if (magnitude >= 1e12) return `${sign}${symbol}${(magnitude / 1e12).toFixed(2)}T`
   if (magnitude >= 1e9) return `${sign}${symbol}${(magnitude / 1e9).toFixed(2)}B`
   if (magnitude >= 1e6) return `${sign}${symbol}${(magnitude / 1e6).toFixed(2)}M`
   if (magnitude >= 1e3) return `${sign}${symbol}${(magnitude / 1e3).toFixed(1)}K`

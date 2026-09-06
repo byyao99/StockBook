@@ -150,6 +150,12 @@ describe('formatCompactCents', () => {
     expect(formatCompactCents(1_234_567_890_00)).toBe('$1.23B')
   })
 
+  // A company's reported revenue reaches trillions: TSMC turns over more than
+  // NT$1T in a quarter, which the billions tier would render as "NT$1046.09B".
+  it('scales to trillions, which reported revenue reaches', () => {
+    expect(formatCompactCents(1_046_090_449_000_00, 'TWD')).toBe('NT$1.05T')
+  })
+
   it('leaves small amounts unscaled', () => {
     expect(formatCompactCents(45_600)).toBe('$456')
   })

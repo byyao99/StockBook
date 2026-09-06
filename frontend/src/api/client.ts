@@ -5,16 +5,19 @@ import type {
   AuthResponse,
   AuthUser,
   CurrencyCurve,
+  CurrencySummary,
   FeeProfile,
   FeeProfileInput,
+  FinancialPeriod,
+  HindsightSummary,
   Instrument,
   InstrumentCandidate,
   InstrumentInput,
-  CurrencySummary,
-  HindsightSummary,
+  NewsArticle,
   Position,
   RealizedSummary,
   RefreshReport,
+  ResearchSyncReport,
   ReturnsSummary,
   Role,
   SyncReport,
@@ -250,4 +253,35 @@ export const settingsApi = {
       method: 'PUT',
       body: JSON.stringify({ profiles }),
     }),
+}
+
+/**
+ * What the companies on the book are doing, as opposed to what the book has
+ * done. This is the only data here the server relays rather than derives.
+ */
+export const researchApi = {
+  // The caller's own merged feed, newest first. Which articles appear is decided
+  // entirely by what they hold — the articles themselves are shared, the feed is
+  // not — so there is no user parameter to pass. `instrumentId` narrows it to
+  // one holding, which is how the per-company view is served without a second
+  // endpoint.
+  news: (limit = 20, offset = 0, instrumentId?: string) =>
+    requestPage<NewsArticle>(
+      `/research/news${pageQuery(limit, offset)}` +
+        (instrumentId ? `&instrument_id=${encodeURIComponent(instrumentId)}` : ''),
+    ),
+
+  // One instrument's reported figures at one cadence, oldest first. A summary
+  // rather than a list, so it carries no pagination block. Reported figures are
+  // master data like a price, so this is not scoped to the caller's holdings.
+  fundamentals: (instrumentId: string, period: 'quarterly' | 'annual' = 'quarterly') =>
+    request<FinancialPeriod[]>(
+      `/research/fundamentals?instrument_id=${encodeURIComponent(instrumentId)}&period=${period}`,
+    ),
+
+  // Fetch headlines and reported figures for the caller's holdings. One call
+  // drives both because the page has one button; the two have their own
+  // freshness windows on the server, so a second press within half an hour costs
+  // the providers nothing.
+  sync: () => request<ResearchSyncReport>('/research/sync', { method: 'POST' }),
 }
