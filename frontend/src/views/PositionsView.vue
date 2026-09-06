@@ -335,14 +335,19 @@ onMounted(load)
   border-radius: 4px;
   padding: 1px 6px;
 }
-/* A faint underline rather than a link colour. Twenty teal symbols would shout
-   over the numbers, which are what the table is for — but with no mark at all
-   the link reads as the bold text it replaced, and nobody finds it. */
+/* Dark text with a plainly visible underline, rather than the accent colour a
+   link would usually take. Colour is already carrying meaning in this table —
+   green is a gain and red is a loss — and the teal accent sits close enough to
+   that green to be read as one, so a third meaning for it would dilute the two
+   doing real work. The underline borrows nothing and is the oldest link
+   convention there is. It has to be genuinely visible to do that job: a first
+   attempt at #cbd5e1 read as the bold text it replaced. */
 .symbol-link {
   color: #0f172a;
   font-weight: 700;
   text-decoration: underline;
-  text-decoration-color: #cbd5e1;
+  text-decoration-color: #94a3b8;
+  text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
 .symbol-link:hover {
