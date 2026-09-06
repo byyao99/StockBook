@@ -19,8 +19,10 @@ import (
 // New builds and configures the Gin router. am signs and verifies bearer
 // tokens; log receives one structured record per request; provider supplies
 // market data and may be nil, in which case the quote endpoints report that
-// quote lookup is not configured.
-func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuoteProvider) *gin.Engine {
+// quote lookup is not configured; collector supplies headlines and may be nil on
+// the same terms, in which case a research sync reports that half as
+// unconfigured and the stored feed stays readable.
+func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuoteProvider, collector handlers.NewsCollector) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RequestID(), middleware.Logger(log), gin.Recovery(), cors())
 
@@ -31,6 +33,7 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 	position := handlers.NewPositionHandler(s)
 	report := handlers.NewReportHandler(s)
 	settings := handlers.NewSettingsHandler(s)
+	research := handlers.NewResearchHandler(s, provider, collector)
 
 	// Health check (also verifies the database connection).
 	//
@@ -139,6 +142,23 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 			rep.GET("/returns", report.Returns)
 			rep.GET("/hindsight", report.Hindsight)
 			rep.GET("/curve", report.Curve)
+		}
+
+		// What the companies in a book are doing, as opposed to what the book
+		// has done. The feed is scoped to the caller's holdings in the query
+		// itself, like every other personal read; the articles and reported
+		// figures behind it are shared master data, like a price.
+		res := v1.Group("/research", middleware.RequireAuth(am, s))
+		{
+			res.GET("/news", research.News)
+			res.GET("/fundamentals", research.Fundamentals)
+			// A sync reaches two external providers, so it is a deliberate
+			// action rather than a background job — a failed source has
+			// somewhere to be reported instead of a log nobody reads. The
+			// ceiling matches the history sync's rather than the quote
+			// refresh's: a first run walks several pages of a news firehose and
+			// asks for years of reported figures per holding.
+			res.POST("/sync", middleware.RateLimit(2, time.Minute), research.Sync)
 		}
 
 		// A user's own preferences, not master data: any authenticated caller,

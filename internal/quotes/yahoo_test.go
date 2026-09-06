@@ -408,3 +408,16 @@ func TestFetchClassifiesATaiwaneseETF(t *testing.T) {
 		t.Error("a Taiwanese ETF must be holdable")
 	}
 }
+
+// serveCapturing is serve with the requested query recorded, for tests that pin
+// down what was asked for rather than what came back.
+func serveCapturing(t *testing.T, body string, query *string) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*query = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return newTestClient(srv.URL)
+}

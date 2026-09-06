@@ -34,6 +34,14 @@ type stubFetcher struct {
 	// historyCalls records the window each ticker was asked for, so the tests
 	// can pin down that a top-up requests a narrow range rather than the lot.
 	historyCalls []historyCall
+	// fundamentals is served by ticker for the research tests; fundamentalsErr
+	// overrides it. A ticker with neither staged comes back empty, which is what
+	// the provider returns for a company it carries no figures for.
+	fundamentals    map[string]quotes.Fundamentals
+	fundamentalsErr map[string]error
+	// fundamentalsCalls records which tickers were asked, so a test can pin down
+	// that a fresh instrument was skipped rather than refetched.
+	fundamentalsCalls []string
 	// permissive answers for any ticker whose market this system models,
 	// deriving the exchange from the suffix. Creating an instrument now requires
 	// a quotable ticker, so tests that add one through the API need a provider
@@ -108,6 +116,19 @@ func synthesizeQuote(ticker string) quotes.Quote {
 		Exchange: exchange,
 		Type:     "EQUITY",
 	}
+}
+
+// Fundamentals serves whatever the test staged, recording the ticker it was
+// asked for. No test ever reaches the network.
+func (s *stubFetcher) Fundamentals(_ context.Context, ticker string, _ []quotes.Period, _, _ time.Time) (quotes.Fundamentals, error) {
+	s.fundamentalsCalls = append(s.fundamentalsCalls, ticker)
+	if err, ok := s.fundamentalsErr[ticker]; ok {
+		return quotes.Fundamentals{}, err
+	}
+	if f, ok := s.fundamentals[ticker]; ok {
+		return f, nil
+	}
+	return quotes.Fundamentals{}, nil
 }
 
 // refreshResponse mirrors the endpoint's payload.

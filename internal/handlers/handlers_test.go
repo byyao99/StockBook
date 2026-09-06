@@ -38,6 +38,13 @@ func setup(t *testing.T) *testEnv {
 // setupWithFetcher wires a router whose instrument handler uses the given market
 // data provider. Tests pass a stub so the suite never reaches the network.
 func setupWithFetcher(t *testing.T, provider handlers.QuoteProvider) *testEnv {
+	return setupWithProviders(t, provider, nil)
+}
+
+// setupWithProviders wires a router with both external providers stubbed. A nil
+// collector is the ordinary case: only the research tests need headlines, and
+// the sync endpoint reports that half as unconfigured without one.
+func setupWithProviders(t *testing.T, provider handlers.QuoteProvider, collector handlers.NewsCollector) *testEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	s, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -47,7 +54,7 @@ func setupWithFetcher(t *testing.T, provider handlers.QuoteProvider) *testEnv {
 	t.Cleanup(func() { s.Close() })
 	am := auth.NewManager([]byte("test-secret"), time.Hour)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &testEnv{r: router.New(s, am, log, provider), s: s, am: am}
+	return &testEnv{r: router.New(s, am, log, provider, collector), s: s, am: am}
 }
 
 // token creates a user with the given role and returns a bearer token for it.

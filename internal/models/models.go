@@ -125,8 +125,19 @@ type Instrument struct {
 	LastPrice      *int64     `json:"last_price"`
 	PriceUpdatedAt *time.Time `json:"price_updated_at"`
 	QuoteCheckedAt *time.Time `json:"quote_checked_at"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	// NewsCheckedAt and FundamentalsCheckedAt are when each was last asked for,
+	// and exist for the same reason QuoteCheckedAt does: to skip a source that
+	// was consulted a moment ago rather than hammering it on every press. They
+	// are separate because the two answer on wildly different cadences — a
+	// headline is stale in half an hour, a quarterly result in three months.
+	//
+	// Both are nil until the first successful collection, and a failed one
+	// leaves them alone, so a source that is down is retried immediately rather
+	// than suppressed.
+	NewsCheckedAt         *time.Time `json:"news_checked_at"`
+	FundamentalsCheckedAt *time.Time `json:"fundamentals_checked_at"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 // DailyClose is one instrument's closing price on one trading day.
@@ -152,6 +163,105 @@ type DailyClose struct {
 	InstrumentID string    `gorm:"primaryKey" json:"instrument_id"`
 	Date         string    `gorm:"primaryKey" json:"date"`
 	Close        int64     `json:"close"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// NewsItem is one headline about a listed company.
+//
+// Unlike everything else stored here it is not a fact about anybody's book: it
+// is a pointer to somebody else's writing, kept only so a feed can be assembled
+// without asking the provider again. It is shared master data on the same
+// footing as an instrument's price — a headline about 2330 is objective, and
+// scoping it per user would store the same article once per holder.
+//
+// ID is the provider's own identifier prefixed with the source
+// ("cnyes:6591330"), because the sources number their articles independently and
+// nothing promises those numbers will not collide.
+//
+// Language is stored rather than derived from the source, so that a reader can
+// see which language a link leads to before opening it and so a second source in
+// either language can be added without the field changing meaning.
+type NewsItem struct {
+	ID          string    `gorm:"primaryKey" json:"id"`
+	Source      string    `json:"source"`
+	Title       string    `json:"title"`
+	Summary     string    `json:"summary"`
+	URL         string    `json:"url"`
+	Publisher   string    `json:"publisher"`
+	Language    string    `json:"language"`
+	PublishedAt time.Time `gorm:"index" json:"published_at"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// NewsMention ties one article to one instrument it was tagged with.
+//
+// This is a join table rather than a copy of the article per instrument, which
+// is a deliberate departure from how DailyClose keys its rows. Two things force
+// it. An article genuinely names several companies — a single cnyes piece tagged
+// 3374, 2330 and 6789 — so duplication would store the same title, summary and
+// URL three times. And the feed has to render one row per article carrying all
+// its tickers, which duplicated rows cannot do without grouping them back
+// together on every read.
+//
+// A row exists only where the provider tagged the article with a code the book
+// actually holds; see internal/news for why that tag is the only thing trusted
+// to create one.
+type NewsMention struct {
+	NewsID       string    `gorm:"primaryKey" json:"news_id"`
+	InstrumentID string    `gorm:"primaryKey;index" json:"instrument_id"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// The metrics a FinancialFact can carry.
+//
+// Three, deliberately. Revenue says how much business the company did, net
+// income how much of it it kept, and diluted EPS how much of that belonged to
+// one share — which is the only one of the three directly comparable with the
+// price already on file. Ratios built on them (margins, ROE, P/E) are derived at
+// the UI edge if they are ever wanted, for the same reason average cost is: a
+// stored ratio freezes a rounding decision into the database.
+//
+// They live here rather than in the provider package because they are what the
+// rows are keyed by. The provider's names for the same things ("TotalRevenue")
+// are its own vocabulary and are translated at that boundary.
+const (
+	MetricRevenue    = "revenue"
+	MetricNetIncome  = "net_income"
+	MetricDilutedEPS = "diluted_eps"
+)
+
+// The reporting cadences, as the provider stamps them. They are kept in the
+// provider's own spelling because that is what arrives on every figure and what
+// the rows are keyed by; renaming them here would mean two vocabularies for one
+// column.
+const (
+	PeriodQuarter = "3M"
+	PeriodYear    = "12M"
+)
+
+// FinancialFact is one number a company reported for one closed period.
+//
+// It is DailyClose's shape generalized, and for the same reason: a fiscal period
+// that has ended does not change, so a refetch upserts onto the composite key
+// instead of accumulating rows that would each be counted. Metric and PeriodType
+// join the key because one instrument reports several figures on two cadences,
+// and AsOfDate is the period end as YYYY-MM-DD for the reasons DailyClose.Date
+// is a string.
+//
+// Currency is the currency the company *reported* in, which is not necessarily
+// the one its shares trade in — an ADR is the ordinary case. This is the one
+// place a currency differing from the instrument's is not a failure: unlike a
+// quote or a cost basis, these figures are never added to anything, so the only
+// thing owed them is a label. Storing what the provider said is what makes the
+// label truthful.
+type FinancialFact struct {
+	InstrumentID string    `gorm:"primaryKey" json:"instrument_id"`
+	Metric       string    `gorm:"primaryKey" json:"metric"`
+	PeriodType   string    `gorm:"primaryKey" json:"period_type"`
+	AsOfDate     string    `gorm:"primaryKey" json:"as_of_date"`
+	Value        int64     `json:"value"`
+	Currency     Currency  `json:"currency"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

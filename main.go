@@ -14,6 +14,7 @@ import (
 	"stockbook/internal/auth"
 	"stockbook/internal/db"
 	"stockbook/internal/models"
+	"stockbook/internal/news"
 	"stockbook/internal/quotes"
 	"stockbook/internal/router"
 
@@ -43,7 +44,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + port(),
-		Handler: router.New(s, authManager, logger, quotes.NewClient()),
+		Handler: router.New(s, authManager, logger, quotes.NewClient(), news.NewAggregator()),
 	}
 
 	// Start the server in the background so main can wait for a shutdown signal.
