@@ -93,6 +93,12 @@ Its three numbers reuse the trade fields as `Quantity` = shares the payout was m
 
 `TransactionSide.Realizes()` is what decides whether an entry gets a stamp; use it rather than comparing against `SideSell`, so a future realizing side is picked up everywhere at once.
 
+**`models.DividendEvent` is what the market did; a ledger entry is what the user banked.** The two are kept strictly apart and nothing crosses between them automatically. A distribution the provider reports is stored as master data beside the daily closes — `db.SaveDividendEvents`, same composite key, same idempotent refetch — and **never posted**. Writing it into the ledger would invent an entry, which is the same thing the hindsight report refuses when it declines to model the dividends unsold shares would have received. What closes the gap is a prompt: `db.PendingDividends` reports distributions the book was entitled to with nothing recorded against them, and the Ledger page fills the trade form in from one and stops there. The announced amount is before whatever was withheld, which this system deliberately does not guess.
+
+**It costs no extra request.** `quotes.Client.History` asks for `events=div` on the call the price sync already makes, so the distributions arrive in the same payload as the closes — which is why "automatic dividend fetching" moved from a natural next step to something that happens whenever prices are synced.
+
+Entitlement is decided by **replaying the ledger to the ex-date**, not by shares on hand: a holding sold last month was still owed the payout from the month before, and refusing to prompt for it would lose real money. This is the same reasoning that keeps a dividend entry from being checked against the current position. An entry counts as the record of a distribution when it falls within `dividendClaimWindow` (60 days) after the ex-date, which covers the payment lag in both markets while staying inside a quarterly cycle — TSMC's ex-dates run about 86 days apart, so a wider window would let one recorded entry answer for two distributions. **Each entry can be claimed only once**, or a quarterly payer recorded a single time would look fully recorded all year, which is exactly the failure this exists to catch.
+
 ### Moving-average cost
 
 The whole algebra lives in `models.PositionState.Apply` (`internal/models/position_state.go`), which is pure and has no database dependency:
@@ -258,7 +264,13 @@ The cost paid cancels, and **so does every dividend** — which is the load-bear
 
 The cash flows *are* the ledger, seen from the user's pocket — a buy is money out, a sale or dividend is money in — plus **one final payment in at `asOf`: the market value of what is still held.** Without that closing flow every unsold share would measure as money that never came back. `ReturnsReport` takes `asOf` as a parameter (the handler passes `time.Now()`) purely so the arithmetic is testable against fixed dates.
 
-**The period is always since inception, and the endpoint deliberately takes no `from`/`to`.** A return over a *window* needs the portfolio's market value on the day the window opened, and this system stores only each instrument's current quote — there is no price history, so the book's value on any past date is not recoverable. Accepting bounds would answer a different question than the one asked. This is the single clearest thing a `price_history` table would unlock, along with an equity curve, drawdown and a benchmark comparison.
+**It answers one of two questions and says which.** With no bounds it measures **since inception**, closing on the live quote for whatever is still held. With `from`/`to` it measures **that window**, which is a different question rather than a filtered version of the same one: a period rate has to open with the position the period was entered holding, so the book's value on the from-date enters the flows as money out and its value on the to-date as money in. Without that opening flow a book held untouched through a rising year has no outflow at all and no rate.
+
+The window was refused for a long time, on the grounds that the book's value on a past date was not recoverable from current quotes alone. `models.DailyClose` lifted that and nobody noticed for a while — a constraint that has expired is worth correcting rather than deleting, or the next reader re-derives the old limit. A windowed report is valued by `db.priceLedger`, the same machinery the equity curve runs on, and therefore inherits the curve's exclusion rather than the live-quote one: an instrument whose stored history does not reach the day it was first traded is dropped whole and counted in `WithoutHistory`.
+
+**The closing figure is dated at the last session it could actually be struck on**, not at the bound asked for. Asking for "this year" in September would otherwise price the book in December, spreading the same gain over a longer assumed period and reporting a lower annual rate with nothing on screen to say why. A trade dated exactly on the opening bound is inside the opening value and never also a flow — counting both charges the period twice for one purchase.
+
+`internal/db/valuation.go` holds what both reports need: which instruments can be valued at all, and what price stands on a day the market did not open (`priceSeries.on` carries the last close forward, never backwards). Two copies of that would drift, which is the same reason `curveMath.ts` mirrors the valuation rules rather than inventing its own.
 
 **An open holding with no quote takes its entire history out of the report** — its purchases along with its unknown value. This is the "unknown is not zero" rule applied to a figure that spans history rather than a moment, and the two alternatives are both worse: valuing it at zero shows the holding as a wipeout, and keeping its buys while dropping only its ending value reports *exactly the same wipeout* with nothing to say anything was missing. Omitting the instrument answers a smaller question truthfully, and `PricedPositions` against `OpenPositions` is what tells the caller how much of the book that is — the same pair `CurrencySummary` reports. A **closed** holding needs no quote and is always counted: its flows are complete and its ending value is genuinely zero.
 
@@ -283,7 +295,7 @@ The UI puts this on `/positions` rather than under Realized, because the closing
 | `POST /instruments/sync-history` | any authenticated user, rate-limited 2/min per IP |
 | `GET /research/news`, `GET /research/fundamentals` | any authenticated user; the feed is **scoped to their own holdings** |
 | `POST /research/sync` | any authenticated user, rate-limited 2/min per IP |
-| `/transactions/*`, `/positions/*`, `/reports/*`, `/settings/*` | any authenticated user, **scoped to themselves** |
+| `/transactions/*`, `/positions/*`, `/reports/*` (incl. `/reports/dividends`), `/settings/*` | any authenticated user, **scoped to themselves** |
 | `/users/*` | admin |
 
 `PATCH /instruments/:id/price` is a separate route from `PUT /instruments/:id` on purpose: keeping quotes current is routine daily work while editing master data is not, so they deserve to be separately grantable and separately auditable.
@@ -308,7 +320,7 @@ Each view follows the same shape: `load()` / `changePage()` / `applyFilter()` pl
 
 ## Deliberately out of scope
 
-Cash balances and buying power, FX rates and cross-currency totals (currencies are tracked and reported separately, never converted), FIFO/specific-lot cost basis, **stock** dividends, splits and reverse splits (they invalidate every historical share count — a good exercise, but a step up in complexity), automatic dividend fetching (the provider's chart endpoint does carry `events=div,split`, so this is a natural next step rather than a closed door), estimating what is withheld from a dividend (a different charge from a brokerage commission, with rates that depend on the holder rather than the trade), and multiple portfolios per user.
+Cash balances and buying power, FX rates and cross-currency totals (currencies are tracked and reported separately, never converted), FIFO/specific-lot cost basis, **stock** dividends, splits and reverse splits (they invalidate every historical share count — a good exercise, but a step up in complexity), automatic dividend *posting* (detection is built — see `models.DividendEvent` — but an entry is never written without the user), estimating what is withheld from a dividend (a different charge from a brokerage commission, with rates that depend on the holder rather than the trade), and multiple portfolios per user.
 
 The **earnings calendar** — when a company next reports — is a different case: it is not declined but unavailable. It lives in Yahoo's `quoteSummary` modules, which now answer 401 without a cookie and a crumb, and no other free source this system already talks to carries it. Anyone adding it is buying a session-management dependency, not writing a feature.
 
