@@ -3,6 +3,7 @@ import {
   averageCost,
   isUnpriced,
   marketValue,
+  portfolioWeight,
   returnPct,
   summaryReturnPct,
   unpricedCount,
@@ -134,5 +135,29 @@ describe('summaryReturnPct', () => {
 
   it('is null when nothing priced has a cost', () => {
     expect(summaryReturnPct(summary({ priced_cost_basis: 0 }))).toBeNull()
+  })
+})
+
+describe('portfolioWeight', () => {
+  // The question it exists for: how much of the book is in this one name.
+  it('measures a holding against its own currency total', () => {
+    const p = position({ quantity: 100, last_price: 1000 })
+    const s = summary({ total_market_value: 400_000 })
+    expect(portfolioWeight(p, s)).toBeCloseTo(0.25, 10)
+  })
+
+  // An unknown weight is not a small one. Rendering 0% would claim the position
+  // is negligible, which is the opposite of what a missing quote means.
+  it('is null when the holding has no quote', () => {
+    const p = position({ quantity: 100, last_price: null })
+    const s = summary({ total_market_value: 400_000 })
+    expect(portfolioWeight(p, s)).toBeNull()
+  })
+
+  // Nothing priced means nothing to measure against, and no division by zero.
+  it('is null when there is no priced market value', () => {
+    const p = position({ quantity: 100, last_price: 1000 })
+    const s = summary({ total_market_value: 0 })
+    expect(portfolioWeight(p, s)).toBeNull()
   })
 })

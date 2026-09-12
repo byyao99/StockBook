@@ -15,6 +15,7 @@ import {
 import {
   averageCost,
   isUnpriced,
+  portfolioWeight,
   returnPct,
   summaryReturnPct,
   unpricedCount,
@@ -130,6 +131,14 @@ function toggleClosed() {
 }
 
 /** Picks the gain/loss class, or nothing at all when the value is unknown. */
+// A holding's share of its own currency's priced book. Null — rendered as an
+// em dash — when it has no quote: a weight of 0% would claim the position is
+// negligible, which is the opposite of unknown.
+function weightOf(p: Position): number | null {
+  const block = summaries.value.find((s) => s.currency === p.currency)
+  return block === undefined ? null : portfolioWeight(p, block)
+}
+
 function plClass(value: number | null): string {
   if (value === null) return 'muted'
   return value < 0 ? 'loss' : 'gain'
@@ -283,6 +292,7 @@ onMounted(async () => {
               <th class="num">Cost basis</th>
               <th class="num">Last price</th>
               <th class="num">Market value</th>
+              <th class="num">Weight</th>
               <th class="num">Unrealized</th>
               <th class="num">Return</th>
               <th class="num">Realized</th>
@@ -314,6 +324,10 @@ onMounted(async () => {
                 <span v-if="isUnpriced(p)" class="badge badge-warn">no quote</span>
               </td>
               <td class="num">{{ formatCentsOrUnknown(p.market_value, p.currency) }}</td>
+              <!-- Share of this holding's own currency book. There is no
+                   exchange rate here, so a weight across currencies is not a
+                   number that exists. -->
+              <td class="num">{{ formatPercentOrUnknown(weightOf(p)) }}</td>
               <td class="num" :class="plClass(p.unrealized_pl)">
                 {{ formatSignedOrUnknown(p.unrealized_pl, p.currency) }}
               </td>

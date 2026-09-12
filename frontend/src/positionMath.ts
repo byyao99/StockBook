@@ -65,3 +65,26 @@ export function summaryReturnPct(s: CurrencySummary): number | null {
   if (s.priced_cost_basis === 0) return null
   return s.total_unrealized_pl / s.priced_cost_basis
 }
+
+/**
+ * What share of its currency's priced book a holding is, as a fraction.
+ *
+ * "Am I 60% in one stock?" is a risk question this book can answer exactly, and
+ * nothing else here asks it: every other figure is about profit.
+ *
+ * The denominator is the currency's **priced** market value, not the whole
+ * book's, for two reasons that are really the same one. There is no exchange
+ * rate here, so a TWD holding's share of a book that also holds USD is not a
+ * number that exists. And an unpriced holding contributes nothing to the total,
+ * so counting it in the denominator would quietly shrink every other weight — a
+ * concentration understated is the wrong way for this figure to be wrong.
+ *
+ * Returns null when the holding has no quote, or when there is nothing priced
+ * to measure against. A weight of 0% would claim the position is negligible,
+ * which is the opposite of unknown.
+ */
+export function portfolioWeight(p: Position, s: CurrencySummary): number | null {
+  const value = marketValue(p)
+  if (value === null || s.total_market_value === 0) return null
+  return value / s.total_market_value
+}
