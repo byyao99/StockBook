@@ -303,9 +303,9 @@ onMounted(async () => {
       </p>
     </section>
 
-    <section class="card">
+    <section class="card wide-card">
       <h2 class="section-title">Savings Plans</h2>
-      <p class="muted hint">
+      <p class="muted intro">
         What is <em>supposed</em> to happen — a standing instruction to buy a
         fixed amount on given days of the month. A plan never writes an entry:
         instalments it has come due for appear on the Ledger page, where you
@@ -382,11 +382,17 @@ onMounted(async () => {
           <label>Started on</label>
           <input v-model="planForm.started_on" type="date" required />
         </div>
-        <button class="btn-primary" type="submit">Add plan</button>
+        <!-- The button has no label of its own, and an empty one is what
+             gives it exactly the height the labelled fields spend above their
+             inputs — so it lands on the same line as them at any width. -->
+        <div class="field">
+          <label aria-hidden="true">&nbsp;</label>
+          <button class="btn-primary" type="submit">Add plan</button>
+        </div>
       </form>
     </section>
 
-    <section class="card fee-card">
+    <section class="card wide-card">
       <h2 class="section-title">Brokerage Fees</h2>
       <p class="muted intro">
         What your broker charges you. The trade form uses these to fill in the fee
@@ -481,7 +487,7 @@ onMounted(async () => {
         </button>
       </form>
 
-      <p class="hint muted left">
+      <p class="hint muted">
         A row charges either a percentage of the trade or a fixed amount per
         trade — set whichever your broker quotes. On a percentage row, the
         discount is how much of the listed commission you actually pay: leave it
@@ -511,10 +517,12 @@ onMounted(async () => {
   max-width: 380px;
 }
 /* Wider than the password card: the fee table is six rows of a mode select,
-   four inputs and a derived column, which does not fit in the 380px the
-   password form wants. It scrolls inside .table-wrap below this, so a narrow
-   window degrades rather than pushing the page sideways. */
-.fee-card {
+   four inputs and a derived column, and the plan form is four fields and a
+   button, neither of which fits in the 380px the password form wants. They
+   share one width so the page has a single column rather than ragged edges,
+   and both scroll inside .table-wrap, so a narrow window degrades rather than
+   pushing the page sideways. */
+.wide-card {
   width: 100%;
   max-width: 1000px;
 }
@@ -533,13 +541,17 @@ onMounted(async () => {
   width: 100%;
   margin-top: 4px;
 }
+/* A hint explains the control above it, so it is left-aligned like one. The
+   password card is the exception: it is a 380px column whose hint reads as a
+   caption on the card rather than on any one field. */
 .hint {
-  text-align: center;
+  display: block;
   font-size: 12px;
-  margin-top: 8px;
+  margin-top: 4px;
 }
-.hint.left {
-  text-align: left;
+.auth-card > .hint {
+  text-align: center;
+  margin-top: 8px;
 }
 .intro {
   margin-top: -8px;
@@ -579,17 +591,24 @@ td select {
   color: #6b7280;
   font-size: 12px;
 }
+/* Aligned at the top, not the bottom: the hints under these fields are of very
+   different lengths, so a field's height says nothing about where its label
+   belongs. Every label is one line, so starting them together lands the
+   controls together too, whatever hangs below. */
 .plan-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
-  align-items: end;
+  align-items: start;
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid #f1f5f9;
 }
+.plan-form .field {
+  margin-bottom: 0;
+}
 .plan-form button {
-  width: auto;
+  width: 100%;
 }
 .plan-actions {
   display: flex;
@@ -604,10 +623,5 @@ td select {
 /* A stopped plan is kept for the record, so it is dimmed rather than removed. */
 tr.closed {
   opacity: 0.55;
-}
-.hint {
-  display: block;
-  font-size: 12px;
-  margin-top: 2px;
 }
 </style>
