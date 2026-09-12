@@ -112,6 +112,7 @@ func Open(dsn string) (*DB, error) {
 		&models.NewsMention{},
 		&models.FinancialFact{},
 		&models.SchemaMeta{},
+		&models.RecurringPlan{},
 	); err != nil {
 		return nil, err
 	}

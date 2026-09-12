@@ -33,6 +33,7 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 	position := handlers.NewPositionHandler(s)
 	report := handlers.NewReportHandler(s)
 	settings := handlers.NewSettingsHandler(s)
+	plan := handlers.NewPlanHandler(s)
 	research := handlers.NewResearchHandler(s, provider, collector)
 
 	// Health check (also verifies the database connection).
@@ -160,6 +161,19 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 			// refresh's: a first run walks several pages of a news firehose and
 			// asks for years of reported figures per holding.
 			res.POST("/sync", middleware.RateLimit(2, time.Minute), research.Sync)
+		}
+
+		// A savings plan is configuration, not ledger — it says what is
+		// supposed to happen and never that it did — so it sits with the
+		// caller's own settings and is scoped to them like everything else
+		// derived from a book.
+		pl := v1.Group("/plans", middleware.RequireAuth(am, s))
+		{
+			pl.GET("", plan.List)
+			pl.POST("", plan.Create)
+			pl.GET("/pending", plan.Pending)
+			pl.PUT("/:id/end", plan.End)
+			pl.DELETE("/:id", plan.Delete)
 		}
 
 		// A user's own preferences, not master data: any authenticated caller,

@@ -45,10 +45,18 @@ export function fromShares(shares: number): number {
  *
  * Thousands are grouped, because a holding of ten thousand shares is hard to
  * read otherwise, and the fraction is only shown when there is one.
+ *
+ * `maxDecimals` exists for figures that are *estimated* rather than recorded. A
+ * holding is a fact and deserves every digit it has; a share count worked out
+ * from a day's close is a guess, and printing it to six places claims an
+ * accuracy it does not have.
  */
-export function formatShares(units: number): string {
+export function formatShares(units: number, maxDecimals = MAX_DECIMALS): string {
   return toShares(units).toLocaleString('en-US', {
     minimumFractionDigits: 0,
-    maximumFractionDigits: MAX_DECIMALS,
+    maximumFractionDigits: maxDecimals,
   })
 }
+
+/** How many decimals an estimated share count is worth writing. */
+export const ESTIMATE_DECIMALS = 3

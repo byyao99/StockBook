@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
-import { instrumentApi, reportApi, settingsApi, transactionApi } from '../api/client'
+import { instrumentApi, planApi, reportApi, settingsApi, transactionApi } from '../api/client'
 import {
   bpsToListPercent,
   formatCents,
@@ -9,7 +9,13 @@ import {
   fromCents,
   toCents,
 } from '../money'
-import { formatShares, fromShares, toShares } from '../shares'
+import {
+  ESTIMATE_DECIMALS,
+  SHARES_SCALE,
+  formatShares,
+  fromShares,
+  toShares,
+} from '../shares'
 import {
   FEE_PROFILE_LABELS,
   chargeMode,
@@ -28,6 +34,7 @@ import type {
   FeeProfileKey,
   Instrument,
   PendingDividend,
+  PendingPurchase,
   Transaction,
   TransactionSide,
 } from '../types'
@@ -52,6 +59,10 @@ const editingId = ref<string | null>(null)
 // what the user banked, and only the user can say the second. Recording one
 // fills this form in and leaves the saving to them.
 const pendingDividends = ref<PendingDividend[]>([])
+// Instalments a savings plan came due for with nothing recorded against them.
+// Same shape of prompt as the dividends above and for the same reason: the plan
+// says what was supposed to happen, and only the reader can say it did.
+const pendingPurchases = ref<PendingPurchase[]>([])
 // A book that has never recorded a dividend can be owed dozens, and all of them
 // at the top of this page would bury the form they are asking the reader to
 // use. The newest few are shown — those are the ones still worth chasing — and
@@ -60,6 +71,10 @@ const PENDING_SHOWN = 5
 const showAllPending = ref(false)
 const visiblePending = computed(() =>
   showAllPending.value ? pendingDividends.value : pendingDividends.value.slice(0, PENDING_SHOWN),
+)
+const showAllPurchases = ref(false)
+const visiblePurchases = computed(() =>
+  showAllPurchases.value ? pendingPurchases.value : pendingPurchases.value.slice(0, PENDING_SHOWN),
 )
 // The form, so recording a prompted dividend can bring it into view.
 const formSection = ref<HTMLElement | null>(null)
@@ -267,7 +282,12 @@ async function load() {
     entries.value = page.items
     total.value = page.pagination.total
     // Reloaded with the ledger, so recording one makes its prompt disappear.
-    pendingDividends.value = await reportApi.pendingDividends()
+    const [dividends, purchases] = await Promise.all([
+      reportApi.pendingDividends(),
+      planApi.pending(),
+    ])
+    pendingDividends.value = dividends
+    pendingPurchases.value = purchases
     if (entries.value.length === 0 && offset.value > 0) {
       offset.value = Math.max(0, offset.value - PAGE_SIZE)
       await load()
@@ -393,6 +413,29 @@ async function recordDividend(pending: PendingDividend) {
   formSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+// recordPurchase fills the form in from an instalment the plan came due for.
+// Nothing is saved: the estimate is the day's close, and the fill happened at
+// whatever the market actually did that morning.
+async function recordPurchase(pending: PendingPurchase) {
+  resetForm()
+  form.instrumentId = pending.instrument_id
+  await nextTick()
+  priceTouched.value = true
+  feeTouched.value = true
+  Object.assign(form, {
+    side: 'buy' as TransactionSide,
+    quantity: pending.estimated_shares === null ? null : toShares(pending.estimated_shares),
+    priceDollars: pending.estimated_price === null ? null : fromCents(pending.estimated_price),
+    feeDollars: null,
+    // A savings plan is the one case the fee profile is not derivable from the
+    // instrument alone, which is what the recurring flag has always been for.
+    recurring: true,
+    tradedAt: pending.due_on,
+    note: '',
+  })
+  formSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 async function submit() {
   error.value = ''
   success.value = ''
@@ -452,6 +495,49 @@ onMounted(async () => {
     <p v-if="error" class="error">{{ error }}</p>
     <p v-if="success" class="success">{{ success }}</p>
 
+    <!-- A savings plan runs on a schedule nobody watches, so an instalment goes
+         missing the same way a dividend does: it simply never gets written
+         down. The plan knows the date and the cash; the day's close is the best
+         guess at the fill. It fills the form in and stops there — what actually
+         executed is on a statement, and only the reader can say. -->
+    <section v-if="pendingPurchases.length > 0" class="card pending">
+      <h2 class="section-title">
+        Plan purchases not recorded
+        <span class="muted">· {{ pendingPurchases.length }}</span>
+      </h2>
+      <p class="notice">
+        Your savings plans came due on these dates and have no purchase against
+        them. Shares and price are estimated from that day's close — the real
+        fill is on your statement.
+      </p>
+      <ul class="pending-list">
+        <li v-for="p in visiblePurchases" :key="p.plan_id + p.due_on">
+          <strong>{{ p.symbol }}</strong>
+          <span class="muted">{{ p.name }}</span>
+          <span class="muted">
+            due {{ p.due_on }} ·
+            {{
+              p.estimated_shares === null
+                ? 'no stored price to estimate from'
+                : `about ${formatShares(p.estimated_shares, ESTIMATE_DECIMALS)} shares at ${formatCents(
+                    p.estimated_price ?? 0,
+                    p.currency,
+                  )}`
+            }}
+          </span>
+          <strong class="num">{{ formatCents(p.amount, p.currency) }}</strong>
+          <button class="btn-secondary" @click="recordPurchase(p)">Record</button>
+        </li>
+      </ul>
+      <button
+        v-if="pendingPurchases.length > PENDING_SHOWN"
+        class="btn-secondary show-all"
+        @click="showAllPurchases = !showAllPurchases"
+      >
+        {{ showAllPurchases ? 'Show fewer' : `Show all ${pendingPurchases.length}` }}
+      </button>
+    </section>
+
     <!-- A payout arrives weeks after anyone was thinking about the stock, so the
          way it goes missing is that nobody remembers to write it down. This is
          the only thing in the system that can notice. It fills the form in and
@@ -472,7 +558,8 @@ onMounted(async () => {
           <strong>{{ p.symbol }}</strong>
           <span class="muted">{{ p.name }}</span>
           <span class="muted">
-            ex {{ p.ex_date }} · {{ formatShares(p.shares) }} shares ×
+            ex {{ p.ex_date }} · {{ formatShares(p.shares) }}
+            {{ p.shares === SHARES_SCALE ? 'share' : 'shares' }} ×
             {{ formatCents(p.per_share, p.currency) }}
           </span>
           <strong class="num">{{ formatCents(p.estimated, p.currency) }}</strong>

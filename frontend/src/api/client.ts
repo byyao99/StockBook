@@ -15,8 +15,11 @@ import type {
   InstrumentInput,
   NewsArticle,
   PendingDividend,
+  PendingPurchase,
   Position,
   RealizedSummary,
+  RecurringPlan,
+  RecurringPlanInput,
   RefreshReport,
   ResearchSyncReport,
   ReturnsSummary,
@@ -294,4 +297,26 @@ export const researchApi = {
   // freshness windows on the server, so a second press within half an hour costs
   // the providers nothing.
   sync: () => request<ResearchSyncReport>('/research/sync', { method: 'POST' }),
+}
+
+/**
+ * Savings plans: what is supposed to happen, and which instalments have come
+ * due with nothing recorded against them. Configuration rather than ledger, so
+ * it sits with the caller's own settings and is scoped to them.
+ */
+export const planApi = {
+  list: () => request<RecurringPlan[]>('/plans'),
+
+  create: (input: RecurringPlanInput) =>
+    request<RecurringPlan>('/plans', { method: 'POST', body: JSON.stringify(input) }),
+
+  // Ending keeps the plan. The purchases it prompted are still in the ledger,
+  // and it is the only record of why they are spaced as they are.
+  end: (id: string, on?: string) =>
+    request<void>(`/plans/${id}/end${on ? `?on=${on}` : ''}`, { method: 'PUT' }),
+
+  // For one entered by mistake; a finished plan wants `end`.
+  remove: (id: string) => request<void>(`/plans/${id}`, { method: 'DELETE' }),
+
+  pending: () => request<PendingPurchase[]>('/plans/pending'),
 }

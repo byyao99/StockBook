@@ -117,6 +117,19 @@ func Gross(quantity, price int64) int64 {
 	return mulDivRoundHalfUp(price, quantity, SharesScale)
 }
 
+// SharesFor is how many shares a cash amount buys at a price, in scaled units.
+//
+// It is Gross run backwards and rounds the same way for the same reason: a
+// fixed amount does not divide evenly into a share price, so the answer has a
+// fraction and the rounding happens once, here. A price of zero buys nothing
+// rather than infinitely much.
+func SharesFor(amount, price int64) int64 {
+	if price <= 0 {
+		return 0
+	}
+	return mulDivRoundHalfUp(amount, SharesScale, price)
+}
+
 // mulDivRoundHalfUp returns a*b/c, rounding halves away from zero, exactly.
 //
 // The product is computed in arbitrary precision because with scaled share

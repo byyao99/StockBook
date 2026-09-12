@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { authApi, settingsApi } from '../api/client'
+import { authApi, instrumentApi, planApi, settingsApi } from '../api/client'
 import { currentUser, setSession } from '../session'
 import { FEE_PROFILE_LABELS, chargeMode, effectiveRatePpm, profileCurrency } from '../feeMath'
 import type { FeeChargeMode } from '../feeMath'
@@ -15,7 +15,76 @@ import {
   toCents,
   listPercentToBps,
 } from '../money'
-import type { FeeProfile, FeeProfileKey } from '../types'
+import type { FeeProfile, FeeProfileKey, Instrument, RecurringPlan } from '../types'
+
+// Savings plans live here rather than on the ledger because they are standing
+// configuration, like the fee terms below — what is *supposed* to happen. The
+// prompts they generate belong on the ledger, where recording happens.
+const plans = ref<RecurringPlan[]>([])
+const planInstruments = ref<Instrument[]>([])
+const planError = ref('')
+const planSuccess = ref('')
+const planForm = ref({
+  instrument_id: '',
+  days_of_month: '',
+  amountDollars: null as number | null,
+  started_on: new Date().toISOString().slice(0, 10),
+})
+
+async function loadPlans() {
+  const [rows, instruments] = await Promise.all([planApi.list(), instrumentApi.list(100, 0)])
+  plans.value = rows
+  planInstruments.value = instruments.items
+}
+
+async function addPlan() {
+  planError.value = ''
+  planSuccess.value = ''
+  try {
+    await planApi.create({
+      instrument_id: planForm.value.instrument_id,
+      days_of_month: planForm.value.days_of_month,
+      amount: toCents(planForm.value.amountDollars ?? 0),
+      started_on: planForm.value.started_on,
+    })
+    planForm.value.instrument_id = ''
+    planForm.value.days_of_month = ''
+    planForm.value.amountDollars = null
+    planSuccess.value = 'Plan added. Instalments it has already come due for are on the Ledger page.'
+    await loadPlans()
+  } catch (e) {
+    planError.value = (e as Error).message
+  }
+}
+
+// Ending keeps the plan: the purchases it prompted are still in the ledger, and
+// it is the only record of why they are spaced as they are.
+async function endPlan(plan: RecurringPlan) {
+  planError.value = ''
+  planSuccess.value = ''
+  try {
+    await planApi.end(plan.id)
+    planSuccess.value = `Stopped the ${plan.symbol} plan. It stays here for the record.`
+    await loadPlans()
+  } catch (e) {
+    planError.value = (e as Error).message
+  }
+}
+
+async function removePlan(plan: RecurringPlan) {
+  if (!confirm(`Delete the ${plan.symbol} plan entirely? Use Stop to keep it for the record.`)) {
+    return
+  }
+  planError.value = ''
+  planSuccess.value = ''
+  try {
+    await planApi.remove(plan.id)
+    planSuccess.value = 'Plan deleted.'
+    await loadPlans()
+  } catch (e) {
+    planError.value = (e as Error).message
+  }
+}
 
 const oldPassword = ref('')
 const newPassword = ref('')
@@ -176,7 +245,14 @@ async function saveFees() {
   }
 }
 
-onMounted(loadFees)
+onMounted(async () => {
+  await loadFees()
+  try {
+    await loadPlans()
+  } catch (e) {
+    planError.value = (e as Error).message
+  }
+})
 </script>
 
 <template>
@@ -225,6 +301,89 @@ onMounted(loadFees)
       <p class="hint muted">
         Use at least two of: lowercase letter, uppercase letter, digit.
       </p>
+    </section>
+
+    <section class="card">
+      <h2 class="section-title">Savings Plans</h2>
+      <p class="muted hint">
+        What is <em>supposed</em> to happen — a standing instruction to buy a
+        fixed amount on given days of the month. A plan never writes an entry:
+        instalments it has come due for appear on the Ledger page, where you
+        confirm what actually executed.
+      </p>
+
+      <p v-if="planError" class="error">{{ planError }}</p>
+      <p v-if="planSuccess" class="success">{{ planSuccess }}</p>
+
+      <div v-if="plans.length > 0" class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Instrument</th>
+              <th>Days</th>
+              <th class="num">Each time</th>
+              <th>From</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in plans" :key="p.id" :class="{ closed: p.ended_on !== '' }">
+              <td>
+                <strong>{{ p.symbol }}</strong>
+                <div class="muted">{{ p.name }}</div>
+              </td>
+              <td>{{ p.days_of_month }}</td>
+              <td class="num">{{ formatCents(p.amount, p.currency) }}</td>
+              <td>{{ p.started_on }}</td>
+              <td>
+                <span v-if="p.ended_on === ''" class="badge badge-buy">running</span>
+                <span v-else class="muted">stopped {{ p.ended_on }}</span>
+              </td>
+              <td class="plan-actions">
+                <button v-if="p.ended_on === ''" class="btn-secondary" @click="endPlan(p)">
+                  Stop
+                </button>
+                <button class="btn-danger" @click="removePlan(p)">Delete</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="muted">No savings plan yet.</p>
+
+      <form class="plan-form" @submit.prevent="addPlan">
+        <div class="field">
+          <label>Instrument</label>
+          <select v-model="planForm.instrument_id" required>
+            <option value="" disabled>Choose…</option>
+            <option v-for="i in planInstruments" :key="i.id" :value="i.id">
+              {{ i.symbol }} — {{ i.name }}
+            </option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Days of month</label>
+          <input v-model="planForm.days_of_month" placeholder="5,15,25" required />
+          <span class="muted hint">
+            A day past the end of a short month runs on its last day rather than
+            being skipped.
+          </span>
+        </div>
+        <div class="field">
+          <label>Amount each time</label>
+          <input v-model.number="planForm.amountDollars" type="number" step="0.01" min="0" required />
+          <span class="muted hint">
+            The cash debited, which is what a plan actually fixes — the shares
+            follow from the morning's price.
+          </span>
+        </div>
+        <div class="field">
+          <label>Started on</label>
+          <input v-model="planForm.started_on" type="date" required />
+        </div>
+        <button class="btn-primary" type="submit">Add plan</button>
+      </form>
     </section>
 
     <section class="card fee-card">
@@ -419,5 +578,36 @@ td select {
 .unit {
   color: #6b7280;
   font-size: 12px;
+}
+.plan-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f1f5f9;
+}
+.plan-form button {
+  width: auto;
+}
+.plan-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.plan-actions button {
+  width: auto;
+  padding: 4px 10px;
+  font-size: 13px;
+}
+/* A stopped plan is kept for the record, so it is dimmed rather than removed. */
+tr.closed {
+  opacity: 0.55;
+}
+.hint {
+  display: block;
+  font-size: 12px;
+  margin-top: 2px;
 }
 </style>

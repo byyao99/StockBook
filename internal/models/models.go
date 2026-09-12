@@ -167,6 +167,44 @@ type DailyClose struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// RecurringPlan is a standing instruction to buy a fixed amount of one
+// instrument on given days of the month — a savings plan, 定期定額.
+//
+// It is **configuration, not ledger**. A plan says what is supposed to happen;
+// it never says what did. The distinction is the same one DividendEvent keeps:
+// the book records what the user banked, and a standing order is not evidence
+// that any particular purchase went through. Plans are stored per user like fee
+// terms, and generate prompts, never entries.
+//
+// Amount is the cash debited each time, in minor units, because that is what a
+// savings plan actually fixes — the share count falls out of whatever the price
+// was that morning and is not knowable in advance. It is the one number the
+// plan can state exactly.
+//
+// DaysOfMonth is a comma-separated, ascending list ("5,15,25"). A day past the
+// end of a short month clamps to that month's last day rather than being
+// skipped: a plan set for the 31st is a plan to buy monthly, and dropping
+// February would silently make it eleven purchases a year.
+//
+// EndedOn is empty while the plan is running. A finished plan is kept rather
+// than deleted, because the purchases it prompted are still in the ledger and
+// the plan is the only record of why they are spaced as they are.
+type RecurringPlan struct {
+	ID           string    `gorm:"primaryKey" json:"id"`
+	UserID       string    `gorm:"index" json:"user_id"`
+	InstrumentID string    `gorm:"index" json:"instrument_id"`
+	DaysOfMonth  string    `json:"days_of_month"`
+	Amount       int64     `json:"amount"`
+	StartedOn    string    `json:"started_on"`
+	EndedOn      string    `json:"ended_on"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// MaxPlanDay is the highest day of the month a plan may name. Clamping handles
+// the short months; this only refuses a number that is not a day at all.
+const MaxPlanDay = 31
+
 // SchemaMeta records one-off facts about the shape of the data itself, as
 // opposed to anything in the book.
 //

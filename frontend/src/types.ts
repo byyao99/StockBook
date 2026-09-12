@@ -609,3 +609,60 @@ export interface PendingDividend {
   shares: number
   estimated: number
 }
+
+/**
+ * A standing instruction to buy a fixed amount of one instrument on given days
+ * of the month — a savings plan, 定期定額.
+ *
+ * **Configuration, not ledger.** A plan says what is supposed to happen; it
+ * never says what did. It generates prompts, never entries.
+ *
+ * `amount` is the cash debited each time, in minor units, because that is what
+ * a savings plan actually fixes — the share count falls out of whatever the
+ * price was that morning. `days_of_month` is a canonical ascending list
+ * ("5,15,25"); a day past the end of a short month clamps to its last day
+ * rather than being skipped. `ended_on` is empty while the plan runs.
+ */
+export interface RecurringPlan {
+  id: string
+  user_id: string
+  instrument_id: string
+  days_of_month: string
+  amount: number
+  started_on: string
+  ended_on: string
+  created_at: string
+  updated_at: string
+  symbol: string
+  name: string
+  currency: Currency
+}
+
+/** What the plan form sends. */
+export interface RecurringPlanInput {
+  instrument_id: string
+  days_of_month: string
+  amount: number
+  started_on: string
+}
+
+/**
+ * An instalment that came due with no purchase recorded against it.
+ *
+ * `estimated_price` and `estimated_shares` come from the stored close on the
+ * due date and are the best guess available, not a claim — the fill happened at
+ * whatever the market did that morning. Both are **null, not zero**, when no
+ * close is stored: an estimate of no shares would be an assertion rather than a
+ * blank, and the reader supplies the figures either way.
+ */
+export interface PendingPurchase {
+  plan_id: string
+  instrument_id: string
+  symbol: string
+  name: string
+  currency: Currency
+  due_on: string
+  amount: number
+  estimated_price: number | null
+  estimated_shares: number | null
+}
