@@ -420,8 +420,17 @@ async function recordPurchase(pending: PendingPurchase) {
   resetForm()
   form.instrumentId = pending.instrument_id
   await nextTick()
-  priceTouched.value = true
-  feeTouched.value = true
+  // The flag only exists to stop the price suggestion clearing what was just
+  // filled in, which a back-dated entry would otherwise do. With no stored
+  // close there is nothing to protect, and raising it anyway left the field
+  // empty and labelled "entered by hand" — a form that had typed nothing
+  // claiming the user had.
+  //
+  // The fee is never flagged either way. It follows the profile from the
+  // shares and the price like any other new entry, which is the whole point of
+  // having one: a savings plan's charge is usually flat, so the estimate is
+  // exact whatever the fill turned out to be.
+  priceTouched.value = pending.estimated_price !== null
   Object.assign(form, {
     side: 'buy' as TransactionSide,
     quantity: pending.estimated_shares === null ? null : toShares(pending.estimated_shares),

@@ -76,6 +76,59 @@ func (d *DB) EarliestTradedAt(instrumentID string) (string, error) {
 	return first.TradedAt.UTC().Format(time.DateOnly), nil
 }
 
+// EarliestPlanStart returns the start date of the earliest savings plan buying
+// an instrument, across every user, or "" when no plan names it.
+//
+// StartedOn is stored as YYYY-MM-DD, which sorts lexicographically into
+// chronological order, so MIN answers directly — unlike the timestamp
+// EarliestTradedAt has to read through the model.
+func (d *DB) EarliestPlanStart(instrumentID string) (string, error) {
+	var date *string
+	err := d.db.Model(&models.RecurringPlan{}).
+		Where("instrument_id = ?", instrumentID).
+		Select("MIN(started_on)").Scan(&date).Error
+	if err != nil || date == nil {
+		return "", err
+	}
+	return *date, nil
+}
+
+// EarliestHistoryNeeded returns the first day an instrument's closes are worth
+// having, or "" when nothing needs them.
+//
+// The first trade is the obvious answer and was the only one until savings
+// plans existed. A plan breaks it: it comes due on dates of its own, and the
+// prompt for an instalment estimates the shares it bought from that day's
+// close — so an instrument with a plan and **no trades at all** needs history,
+// from the plan's start date, which the first-trade rule would have declined to
+// fetch. That was the whole of the bug: a plan set up before its first purchase
+// could never offer an estimate, because the prices it needed were never
+// downloaded.
+//
+// Both answers span every user's book, exactly as EarliestTradedAt does and for
+// the same reason: instruments are shared master data, and what comes back is
+// public market data either way.
+func (d *DB) EarliestHistoryNeeded(instrumentID string) (string, error) {
+	traded, err := d.EarliestTradedAt(instrumentID)
+	if err != nil {
+		return "", err
+	}
+	planned, err := d.EarliestPlanStart(instrumentID)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case traded == "":
+		return planned, nil
+	case planned == "":
+		return traded, nil
+	case planned < traded:
+		return planned, nil
+	default:
+		return traded, nil
+	}
+}
+
 // DailyCloseSeries returns one instrument's closes between from and to
 // inclusive, in date order. Both bounds are YYYY-MM-DD.
 func (d *DB) DailyCloseSeries(instrumentID, from, to string) ([]models.DailyClose, error) {

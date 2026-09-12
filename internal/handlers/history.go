@@ -63,13 +63,14 @@ const (
 // an index — is dead without them. Gating it behind an admin would leave
 // everyone else looking at empty charts.
 //
-// **Only instruments that have been traded are fetched, and only from the day
-// they were first traded.** Prices before the first trade value nothing, and an
-// instrument nobody holds has nothing to plot; skipping both is what keeps a run
-// proportional to the book rather than to the master data. Because instruments
-// are shared, that first-trade date spans every user's ledger rather than the
-// caller's — which leaks no ledger detail, since the resulting prices are public
-// market data either way.
+// **Only instruments something needs are fetched, and only from the day it
+// first needed them** — see db.EarliestHistoryNeeded, which is the first trade
+// or the start of a savings plan, whichever came first. Prices before that
+// value nothing, and an instrument nobody trades or plans to has nothing to
+// plot; skipping both is what keeps a run proportional to the book rather than
+// to the master data. That date spans every user's book rather than the
+// caller's, because instruments are shared — which leaks no ledger detail,
+// since the resulting prices are public market data either way.
 //
 // A run is incremental: an instrument already holding history is topped up from
 // a few days before its last session rather than downloaded again. A partial
@@ -130,15 +131,15 @@ func (h *InstrumentHandler) SyncHistory(c *gin.Context) {
 func (h *InstrumentHandler) syncOne(ctx context.Context, item models.Instrument) syncResult {
 	result := syncResult{InstrumentID: item.ID, Symbol: item.Symbol}
 
-	firstTraded, err := h.db.EarliestTradedAt(item.ID)
+	needsFrom, err := h.db.EarliestHistoryNeeded(item.ID)
 	if err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
 		return result
 	}
-	if firstTraded == "" {
+	if needsFrom == "" {
 		result.Status = "skipped"
-		result.Error = "never traded, so no history is needed"
+		result.Error = "neither traded nor on a savings plan, so no history is needed"
 		return result
 	}
 
@@ -150,7 +151,7 @@ func (h *InstrumentHandler) syncOne(ctx context.Context, item models.Instrument)
 	}
 	result.Ticker = ticker
 
-	from, err := h.syncFrom(item.ID, firstTraded)
+	from, err := h.syncFrom(item.ID, needsFrom)
 	if err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
@@ -158,10 +159,11 @@ func (h *InstrumentHandler) syncOne(ctx context.Context, item models.Instrument)
 	}
 	to := time.Now().UTC()
 	if from.After(to) {
-		// A book whose only trade is dated in the future. There is no history to
-		// fetch yet, and asking for an inverted window would be an error.
+		// A book whose only trade, or whose only plan, is dated in the future.
+		// There is no history to fetch yet, and asking for an inverted window
+		// would be an error.
 		result.Status = "skipped"
-		result.Error = "first trade is in the future"
+		result.Error = "nothing needs history before today"
 		return result
 	}
 	result.From, result.To = from.Format(time.DateOnly), to.Format(time.DateOnly)
@@ -225,14 +227,14 @@ func (h *InstrumentHandler) syncOne(ctx context.Context, item models.Instrument)
 }
 
 // syncFrom picks the day to fetch from: a few days before the last session
-// already stored, or the first trade when there is none.
+// already stored, or the first day anything needs when there is none.
 //
 // The overlap is deliberate. The most recent bar can still be provisional and
 // the provider revises a close now and then, so the last few days are refetched
 // and overwritten rather than trusted — which costs nothing, because the write
 // is an upsert keyed on the session.
-func (h *InstrumentHandler) syncFrom(instrumentID, firstTraded string) (time.Time, error) {
-	first, err := time.Parse(time.DateOnly, firstTraded)
+func (h *InstrumentHandler) syncFrom(instrumentID, needsFrom string) (time.Time, error) {
+	first, err := time.Parse(time.DateOnly, needsFrom)
 	if err != nil {
 		return time.Time{}, err
 	}

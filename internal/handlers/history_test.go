@@ -93,9 +93,9 @@ func TestSyncHistoryStoresASeries(t *testing.T) {
 	}
 }
 
-// An instrument nobody has traded has nothing to plot, so it is not fetched at
-// all — that is what keeps a run proportional to the book rather than to the
-// master data.
+// An instrument nobody has traded and nobody plans to buy has nothing to plot,
+// so it is not fetched at all — that is what keeps a run proportional to the
+// book rather than to the master data.
 func TestSyncHistorySkipsUntradedInstruments(t *testing.T) {
 	fetcher := &stubFetcher{permissive: true}
 	e := setupWithFetcher(t, fetcher)
@@ -116,6 +116,46 @@ func TestSyncHistorySkipsUntradedInstruments(t *testing.T) {
 	}
 	if len(fetcher.historyCalls) != 0 {
 		t.Errorf("the provider was called for an untraded instrument: %+v", fetcher.historyCalls)
+	}
+}
+
+// A savings plan is the other thing that needs history, and the ordinary way to
+// start one is before the first purchase — so an instrument with a plan and no
+// trades at all must still be fetched, from the plan's start date. Skipping it
+// left every instalment prompt with no close to estimate the shares from, which
+// is the whole reason those prices are wanted.
+func TestSyncHistoryFetchesAPlannedInstrumentThatWasNeverTraded(t *testing.T) {
+	fetcher := &stubFetcher{
+		permissive: true,
+		history: map[string]quotes.History{
+			"2330.TW": series("2025-07-15", 100000, 101050),
+		},
+	}
+	e := setupWithFetcher(t, fetcher)
+	token := e.token(t, "saver", models.RoleUser)
+	inst := e.seedInstrument(t, "2330", nil)
+
+	plan := map[string]any{
+		"instrument_id": inst.ID,
+		"days_of_month": "5,15,25",
+		"amount":        300000,
+		"started_on":    "2025-07-15",
+	}
+	if rec := e.do(t, http.MethodPost, "/api/v1/plans", plan, token); rec.Code != http.StatusCreated {
+		t.Fatalf("create plan: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments/sync-history", nil, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sync: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	report := decodeSync(t, rec.Body.Bytes())
+
+	if report.Synced != 1 || report.Skipped != 0 {
+		t.Fatalf("a planned instrument was not synced: %+v", report)
+	}
+	if got := report.Results[0].From; got != "2025-07-15" {
+		t.Errorf("fetched from %q, want the plan's start 2025-07-15", got)
 	}
 }
 

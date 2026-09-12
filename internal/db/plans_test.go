@@ -213,3 +213,56 @@ func TestPlansAreScopedToTheirOwner(t *testing.T) {
 		t.Errorf("saw another book's instalments: %+v", pending)
 	}
 }
+
+// The bug this exists for: a plan set up before its first purchase needs the
+// closes to estimate an instalment from, and the history sync used to fetch
+// only what had been traded — so an instrument with a plan and no trades was
+// skipped, and its prompts could never offer an estimate.
+func TestHistoryIsNeededForAPlannedInstrumentThatWasNeverTraded(t *testing.T) {
+	s := newTestDB(t)
+	user := seedUser(t, s, "saver")
+	inst := seedInstrument(t, s, "VOO")
+
+	needed, err := s.EarliestHistoryNeeded(inst.ID)
+	if err != nil {
+		t.Fatalf("EarliestHistoryNeeded: %v", err)
+	}
+	if needed != "" {
+		t.Fatalf("an untraded, unplanned instrument needs history from %q", needed)
+	}
+
+	plan := seedPlan(t, s, user.ID, inst.ID, "5,15,25", 10_000, 3)
+	needed, err = s.EarliestHistoryNeeded(inst.ID)
+	if err != nil {
+		t.Fatalf("EarliestHistoryNeeded: %v", err)
+	}
+	if needed != plan.StartedOn {
+		t.Errorf("history needed from %q, want the plan's start %q", needed, plan.StartedOn)
+	}
+}
+
+// A trade before the plan moves the boundary back: the earlier of the two is
+// what history has to reach, or the ledger's own opening trade goes unvalued.
+func TestHistoryReachesBackToWhicheverCameFirst(t *testing.T) {
+	s := newTestDB(t)
+	user := seedUser(t, s, "saver")
+	inst := seedInstrument(t, s, "VOO")
+	seedPlan(t, s, user.ID, inst.ID, "5", 10_000, 30)
+
+	if _, err := s.CreateTransaction(models.Transaction{
+		ID: uuid.NewString(), UserID: user.ID, InstrumentID: inst.ID,
+		Side: models.SideBuy, Quantity: shares(1), Price: 70_000,
+		TradedAt: day(2),
+	}); err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+
+	needed, err := s.EarliestHistoryNeeded(inst.ID)
+	if err != nil {
+		t.Fatalf("EarliestHistoryNeeded: %v", err)
+	}
+	want := day(2).UTC().Format(time.DateOnly)
+	if needed != want {
+		t.Errorf("history needed from %q, want the first trade %q", needed, want)
+	}
+}
