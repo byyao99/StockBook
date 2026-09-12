@@ -92,13 +92,39 @@ func (h *ReportHandler) Curve(c *gin.Context) {
 // Returns handles GET /api/v1/reports/returns, always scoped to the caller: the
 // annualized money-weighted rate of return on their book, one entry per currency.
 //
-// It takes no date range, unlike Realized. A return measured over a window needs
-// the market value of the portfolio on the day the window opened, and this
-// system stores only each instrument's current quote — the book's value on any
-// past date cannot be recovered. The period is therefore always since the first
-// entry in the ledger, and accepting bounds would promise otherwise.
+// With no bounds it measures since the first entry in the ledger, closing on the
+// live quote for whatever is still held. With either bound it measures that
+// window instead, which is a different question and not a filtered version of
+// the same one — a period rate has to open with the position the period was
+// entered holding.
+//
+// The window used to be refused outright, on the grounds that the book's value
+// on a past date was not recoverable. That was true until daily closes were
+// stored; it is not any more, and a windowed report is valued from them by the
+// same rules the equity curve follows.
 func (h *ReportHandler) Returns(c *gin.Context) {
-	report, err := h.db.ReturnsReport(callerID(c), time.Now())
+	from, to := c.Query("from"), c.Query("to")
+	for _, bound := range []string{from, to} {
+		if bound == "" {
+			continue
+		}
+		if _, err := time.Parse(time.DateOnly, bound); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "dates must be YYYY-MM-DD"})
+			return
+		}
+	}
+
+	if from == "" && to == "" {
+		report, err := h.db.ReturnsReport(callerID(c), time.Now())
+		if err != nil {
+			respondDBError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": report})
+		return
+	}
+
+	report, err := h.db.ReturnsBetween(callerID(c), from, to)
 	if err != nil {
 		respondDBError(c, err)
 		return

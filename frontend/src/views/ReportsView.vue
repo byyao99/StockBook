@@ -11,7 +11,13 @@ import {
   formatSignedCents,
 } from '../money'
 import EquityCurveChart from '../components/EquityCurveChart.vue'
-import type { CurrencyCurve, HindsightSummary, RealizedSummary, SyncResult } from '../types'
+import type {
+  CurrencyCurve,
+  HindsightSummary,
+  RealizedSummary,
+  ReturnsSummary,
+  SyncResult,
+} from '../types'
 
 // How many years back the quick picker offers. A ledger older than this is
 // still reachable through the date fields; the buttons are for the years
@@ -28,6 +34,11 @@ const hindsight = ref<HindsightSummary[]>([])
 // sessions are drawn — narrowing to last month still shows holdings bought
 // years ago, where the two reports below would drop them.
 const curves = ref<CurrencyCurve[]>([])
+// The money-weighted return for the chosen period. This is a different question
+// from the one on /positions, which measures since the book began: this one
+// opens with the position the period was entered holding, so "how did 2025 go?"
+// is answerable without the answer being dragged around by every year before it.
+const periodReturns = ref<ReturnsSummary[]>([])
 const loading = ref(false)
 const error = ref('')
 const success = ref('')
@@ -74,14 +85,16 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [realized, sells, history] = await Promise.all([
+    const [realized, sells, history, rates] = await Promise.all([
       reportApi.realized(from.value || undefined, to.value || undefined),
       reportApi.hindsight(from.value || undefined, to.value || undefined),
       reportApi.curve(from.value || undefined, to.value || undefined),
+      reportApi.returns(from.value || undefined, to.value || undefined),
     ])
     summaries.value = realized
     hindsight.value = sells
     curves.value = history
+    periodReturns.value = rates
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -291,6 +304,65 @@ onMounted(() => selectYear(thisYear))
         </p>
       </div>
     </section>
+
+    <!-- The money-weighted return for the chosen period. It sits under the
+         chart because it answers what the chart shows — but as a single number
+         and weighted by how much money was at work when, which a line cannot
+         say. It is deliberately a different figure from the one on Holdings:
+         that one runs since the book began, this one opens with whatever was
+         already held on the first day of the period. -->
+    <template v-if="!loading && periodReturns.length > 0">
+      <h2 class="report-title realized-title">Return</h2>
+      <section v-for="r in periodReturns" :key="r.currency" class="currency-block">
+        <h2 class="currency-title">
+          {{ r.currency }}
+          <span class="muted">· {{ periodLabel }}</span>
+        </h2>
+        <div class="cards">
+          <div class="stat">
+            <span class="stat-label">Annualized (XIRR)</span>
+            <strong class="stat-value" :class="plClass(r.xirr_bps ?? 0)">
+              {{ formatBpsOrUnknown(r.xirr_bps) }}
+            </strong>
+            <span class="muted stat-note">
+              money-weighted, per year over this period
+            </span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Opened holding</span>
+            <strong class="stat-value">{{ formatCents(r.opening_value, r.currency) }}</strong>
+            <span class="muted stat-note">what the book was worth entering the period</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Closed holding</span>
+            <strong class="stat-value">{{ formatCents(r.ending_value, r.currency) }}</strong>
+            <span class="muted stat-note">at the last stored close in it</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Net gain</span>
+            <strong class="stat-value" :class="plClass(r.net_gain)">
+              {{ formatSignedCents(r.net_gain, r.currency) }}
+            </strong>
+            <span class="muted stat-note">
+              after {{ formatCents(r.invested, r.currency) }} in
+              and {{ formatCents(r.returned, r.currency) }} out
+            </span>
+          </div>
+        </div>
+
+        <!-- A rate that could not be found is never rendered as 0%: a book that
+             cannot be measured has not broken even. -->
+        <p v-if="r.unavailable" class="notice">{{ r.unavailable }}</p>
+        <p v-else-if="r.without_history > 0" class="notice">
+          {{ r.without_history }}
+          {{ r.without_history === 1 ? 'holding is' : 'holdings are' }}
+          left out of this rate for the same reason
+          {{ r.without_history === 1 ? 'it is' : 'they are' }} left out of the curve:
+          the stored prices do not reach back to when
+          {{ r.without_history === 1 ? 'it was' : 'they were' }} first traded.
+        </p>
+      </section>
+    </template>
 
     <h2 v-if="!loading" class="report-title realized-title">Realized</h2>
     <p v-if="!loading && summaries.length === 0" class="muted">

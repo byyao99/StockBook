@@ -220,10 +220,14 @@ export const reportApi = {
   realized: (from?: string, to?: string) =>
     request<RealizedSummary[]>(`/reports/realized${dateRangeQuery(from, to)}`),
 
-  // The annualized money-weighted return, one entry per currency. It takes no
-  // date range on purpose: a windowed rate needs the book's market value on the
-  // opening day, which the server cannot recover from current quotes alone.
-  returns: () => request<ReturnsSummary[]>('/reports/returns'),
+  // The annualized money-weighted return, one entry per currency.
+  //
+  // With no bounds it measures since the book began and closes on live quotes;
+  // with bounds it measures that window, opening with what was already held and
+  // closing on stored daily closes. Those are different questions rather than a
+  // filter, so the response echoes the period it answered for.
+  returns: (from?: string, to?: string) =>
+    request<ReturnsSummary[]>(`/reports/returns${dateRangeQuery(from, to)}`),
 
   // What the sales in a period would be worth had the shares never been sold.
   // The bounds behave exactly as realized's do — this one takes a period

@@ -248,18 +248,23 @@ export interface HindsightSummary {
 }
 
 // ReturnsSummary is one currency's annualized money-weighted rate of return
-// (XIRR) over the whole ledger, with the figures behind it.
+// (XIRR), with the figures behind it.
 //
-// The period is always since the first entry — never a window. A windowed rate
-// needs the market value of the book on the day the window opened, and the
-// server keeps only each instrument's current quote, so that value is not
-// recoverable.
+// It answers one of two questions and says which. **Since inception** (no
+// bounds) runs from the first entry to now, closing on the live quote for
+// whatever is still held. **Over a window** (`from`/`to` set, and echoed back in
+// those fields) measures one period, opening with the value of the position the
+// period was entered holding and closing on the stored close for its last day.
+// The two are not filtered versions of each other, which is why the response
+// distinguishes them rather than leaving it to be inferred from the request.
 //
-// An open holding with no quote is left out of the calculation ENTIRELY, its
-// purchases along with its unknown value: counting the money that went in
-// without the value it turned into would report the holding as a wipeout.
-// Compare `priced_positions` with `open_positions` to see how much of the book
-// the rate covers.
+// The exclusion rule differs with the question. Since inception, an open holding
+// with no quote is left out ENTIRELY, its purchases along with its unknown
+// value: counting the money that went in without the value it turned into would
+// report the holding as a wipeout — compare `priced_positions` with
+// `open_positions`. Over a window, valuation comes from stored closes instead,
+// so what drops out is an instrument whose history does not reach back to when
+// it was first traded; `without_history` counts those, exactly as the curve does.
 export interface ReturnsSummary {
   currency: Currency
   // Basis points: 1234 means 12.34% a year. null when no rate could be
@@ -276,8 +281,18 @@ export interface ReturnsSummary {
   first_flow_at: string | null
   // When the open holdings were valued: the far end of the period.
   as_of: string
+  // How much of the book the rate covers, on a since-inception report. Both are
+  // 0 over a window, where a live quote decides nothing.
   open_positions: number
   priced_positions: number
+  // The period, echoed back. Absent on a since-inception report.
+  from?: string
+  to?: string
+  // What the book was worth entering a windowed period — the flow that makes
+  // the rate a period rate rather than a lifetime one. 0 since inception.
+  opening_value: number
+  // Instruments dropped from a windowed report for want of stored prices.
+  without_history: number
 }
 
 // CurvePoint is one trading session in the book's own history.

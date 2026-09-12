@@ -158,69 +158,17 @@ func (d *DB) EquityCurve(userID, from, to string) ([]CurrencyCurve, error) {
 	return curves, nil
 }
 
-// priceSeries is one instrument's stored closes, indexed for lookup and ordered
-// for iteration.
-type priceSeries struct {
-	closes map[string]int64
-	dates  []string
-}
-
-// on returns the close in effect on date: the one for that session, or the most
-// recent before it. The second result reports whether any price is known yet.
-//
-// Carrying the last close forward is what makes a holiday or a trading halt a
-// non-event rather than a hole in the curve. It never carries *backwards*: a
-// date before the series begins has no price, which is the case that excludes an
-// instrument from the curve entirely.
-func (s priceSeries) on(date string) (int64, bool) {
-	if close, ok := s.closes[date]; ok {
-		return close, true
-	}
-	i := sort.SearchStrings(s.dates, date)
-	if i == 0 {
-		return 0, false
-	}
-	return s.closes[s.dates[i-1]], true
-}
-
 // currencyCurve builds one currency's curve from its slice of the ledger.
 func (d *DB) currencyCurve(currency models.Currency, ledger []curveTx, from, to string) (CurrencyCurve, error) {
 	curve := CurrencyCurve{Currency: currency, Points: []CurvePoint{}}
 
-	// The day each instrument was first traded decides how far back its prices
-	// have to reach for it to be usable.
-	firstTraded := map[string]string{}
-	for _, tx := range ledger {
-		date := tx.TradedAt.UTC().Format(time.DateOnly)
-		if seen, ok := firstTraded[tx.InstrumentID]; !ok || date < seen {
-			firstTraded[tx.InstrumentID] = date
-		}
+	priced, err := d.priceLedger(ledger, to)
+	if err != nil {
+		return curve, err
 	}
-	curve.Instruments = len(firstTraded)
-
-	series := map[string]priceSeries{}
-	sessions := map[string]bool{}
-	for id, first := range firstTraded {
-		rows, err := d.DailyCloseSeries(id, "0000-01-01", to)
-		if err != nil {
-			return curve, err
-		}
-		// Prices that do not reach the first trade cannot value the holding for
-		// the days between, so the instrument is left out rather than counted
-		// short. A successful sync always satisfies this.
-		if len(rows) == 0 || rows[0].Date > first {
-			curve.WithoutHistory++
-			delete(firstTraded, id)
-			continue
-		}
-		s := priceSeries{closes: make(map[string]int64, len(rows)), dates: make([]string, 0, len(rows))}
-		for _, r := range rows {
-			s.closes[r.Date] = r.Close
-			s.dates = append(s.dates, r.Date)
-			sessions[r.Date] = true
-		}
-		series[id] = s
-	}
+	curve.Instruments = priced.instruments()
+	curve.WithoutHistory = priced.withoutHistory
+	series, sessions, firstTraded := priced.series, priced.sessions, priced.firstTraded
 
 	if len(series) == 0 {
 		curve.Unavailable = "no holding in this currency has stored price history covering when it was held; sync prices first"

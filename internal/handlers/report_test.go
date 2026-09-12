@@ -227,6 +227,64 @@ func TestReturnsReportEndpoint(t *testing.T) {
 	}
 }
 
+// Bounds switch the endpoint to the windowed question, which is valued from
+// stored closes rather than from the live quote — a different answer from the
+// same route, so the response says which one it gave.
+func TestReturnsReportTakesAPeriod(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "investor", models.RoleUser)
+	price := int64(12000)
+	inst := e.seedInstrument(t, "2330", &price)
+
+	buy := tradePayload(inst.ID, models.SideBuy, 100, 10000, tradedOn(2025, time.January, 2))
+	if rec := e.do(t, http.MethodPost, "/api/v1/transactions", buy, token); rec.Code != http.StatusCreated {
+		t.Fatalf("buy: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	// Entered 2026 holding 100 at 100.00 and left it holding 100 at 110.00.
+	e.seedCloses(t, inst.ID, tradedOn(2025, time.January, 2), 10000)
+	e.seedCloses(t, inst.ID, tradedOn(2026, time.January, 1), 10000)
+	e.seedCloses(t, inst.ID, tradedOn(2026, time.December, 31), 11000)
+
+	var report []db.ReturnsSummary
+	rec := e.do(t, http.MethodGet,
+		"/api/v1/reports/returns?from=2026-01-01&to=2026-12-31", nil, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returns: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decodeData(t, rec, &report)
+
+	if len(report) != 1 {
+		t.Fatalf("got %d currencies, want 1: %+v", len(report), report)
+	}
+	got := report[0]
+	if got.From != "2026-01-01" || got.To != "2026-12-31" {
+		t.Errorf("period %q..%q, want the requested bounds", got.From, got.To)
+	}
+	if got.OpeningValue != 1000000 {
+		t.Errorf("opening value %d, want what was already held", got.OpeningValue)
+	}
+	if got.EndingValue != 1100000 {
+		t.Errorf("ending value %d, want the stored close, not the live quote", got.EndingValue)
+	}
+	if got.XIRRBps == nil {
+		t.Fatalf("no rate computed: %q", got.Unavailable)
+	}
+	// 10% over one year, no flows in between.
+	if *got.XIRRBps < 900 || *got.XIRRBps > 1100 {
+		t.Errorf("rate %d bps, want about 1000", *got.XIRRBps)
+	}
+}
+
+// A malformed bound is refused rather than silently ignored, as on the curve.
+func TestReturnsReportRejectsAMalformedDate(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "investor", models.RoleUser)
+	rec := e.do(t, http.MethodGet, "/api/v1/reports/returns?from=last-year", nil, token)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("got %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
 // A ledger is personal, and so is every number derived from one.
 func TestReturnsReportDoesNotLeakAnotherBook(t *testing.T) {
 	e := setup(t)
