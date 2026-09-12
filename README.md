@@ -10,6 +10,16 @@ It is a book of record, not a trading system — there is no cash balance, no or
 ## Quick start
 
 ```bash
+AUTH_SECRET=dev-secret ADMIN_USERNAME=admin ADMIN_PASSWORD=Passw0rd ./dev.sh
+```
+
+That starts the API on :8080 and the SPA on :5173, installs frontend
+dependencies the first time, and stops both on Ctrl-C. `PORT` and `WEB_PORT`
+move either side. Output is prefixed `[api]` / `[web]`.
+
+To run them apart — two terminals, which is what the script does for you:
+
+```bash
 # terminal 1 — API on :8080
 AUTH_SECRET=dev-secret ADMIN_USERNAME=admin ADMIN_PASSWORD=Passw0rd go run .
 

@@ -31,7 +31,11 @@ npm run type-check          # type-check only
 npm test                    # vitest unit tests (npm run test:watch for watch mode)
 ```
 
-To work on the full stack, run the backend and `npm run dev` simultaneously; the Vite proxy (`frontend/vite.config.ts`) forwards `/api/*` to the backend, so the SPA uses same-origin relative URLs.
+To work on the full stack, `./dev.sh` from the repo root starts both and stops both — the two halves are useless apart, since the Vite proxy (`frontend/vite.config.ts`) forwards `/api/*` to the backend and the SPA uses same-origin relative URLs. `PORT` and `WEB_PORT` override either side. Output is prefixed `[api]` / `[web]` so one terminal reads as two.
+
+Two things in that script are load-bearing rather than stylistic. It **builds** the binary instead of using `go run`, because `go run` compiles to a temporary binary and execs it as a child — the PID a supervisor would hold is the wrapper, so killing it leaves the server holding the port under a process nobody can find. And it runs each half in its **own process group** (`set -m`) so the whole tree can be signalled: `npm run dev` spawns Vite, and signalling only npm leaves Vite on the port. A busy port is refused up front, because the alternative is a backend that logs a bind error, exits, and leaves a frontend proxying to nothing with the real message scrolled off the top.
+
+Running the two by hand still works and is what the commands above describe.
 
 **Testing & CI.** `go test -race ./...` — the `-race` flag is not optional here. The concurrency tests in `internal/handlers/concurrency_test.go` are the ones that justify the compare-and-swap in the position write path, and without the race detector they are close to meaningless. Frontend tests are Vitest units colocated with their modules (`src/*.test.ts`) covering `money.ts`, `session.ts`, `positionMath.ts`, `curveMath.ts`, and `feeMath.ts` — `curveMath.ts` is the contract test mirroring the backend's valuation rules, so changing how a position is valued means updating `internal/db/positions.go`, `positionMath.ts`, and that test together. Tests run in a plain node environment; `frontend/vitest.setup.ts` stubs `localStorage`. There are no component tests yet; adding some means switching `test.environment` in `vite.config.ts` to a DOM implementation. CI (`.github/workflows/ci.yml`) runs on pushes to master and PRs.
 
