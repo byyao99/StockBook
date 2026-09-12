@@ -142,6 +142,7 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 			rep.GET("/returns", report.Returns)
 			rep.GET("/hindsight", report.Hindsight)
 			rep.GET("/curve", report.Curve)
+			rep.GET("/dividends", report.Dividends)
 		}
 
 		// What the companies in a book are doing, as opposed to what the book

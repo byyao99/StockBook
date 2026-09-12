@@ -131,3 +131,21 @@ func (h *ReportHandler) Returns(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": report})
 }
+
+// Dividends handles GET /api/v1/reports/dividends, scoped to the caller: the
+// distributions their book was entitled to and has no ledger entry for.
+//
+// It is a prompt and never a posting. The provider knows what a security paid
+// and the ledger knows what the user banked; those are different facts with
+// different owners, and writing the first into the second would invent entries.
+// What this does is close the gap that actually loses money — a payout arrives
+// weeks after anyone was thinking about the stock, and simply never gets written
+// down. Nothing else in this system can remind anybody of that.
+func (h *ReportHandler) Dividends(c *gin.Context) {
+	pending, err := h.db.PendingDividends(callerID(c))
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": pending})
+}

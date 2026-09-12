@@ -14,6 +14,7 @@ import type {
   InstrumentCandidate,
   InstrumentInput,
   NewsArticle,
+  PendingDividend,
   Position,
   RealizedSummary,
   RefreshReport,
@@ -241,6 +242,11 @@ export const reportApi = {
   // holdings bought years ago.
   curve: (from?: string, to?: string) =>
     request<CurrencyCurve[]>(`/reports/curve${dateRangeQuery(from, to)}`),
+
+  // Distributions the book was entitled to with no ledger entry against them.
+  // It takes no period: an unrecorded payout does not stop being unrecorded
+  // because the year turned over.
+  pendingDividends: () => request<PendingDividend[]>('/reports/dividends'),
 }
 
 // A user's own preferences. Scoped to the caller by the server, so there is no

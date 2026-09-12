@@ -14,6 +14,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -166,6 +167,28 @@ type chartResult struct {
 			Close []*float64 `json:"close"`
 		} `json:"quote"`
 	} `json:"indicators"`
+	// Events arrives only when the request asks for it. The dividends map is
+	// keyed by the event's own timestamp as a string, which is why it is a map
+	// rather than a list — the key carries no information the value does not.
+	Events struct {
+		Dividends map[string]struct {
+			Amount float64 `json:"amount"`
+			Date   int64   `json:"date"`
+		} `json:"dividends"`
+	} `json:"events"`
+}
+
+// Dividend is one cash distribution the provider says an instrument paid.
+//
+// ExDate is the day the shares began trading without the right to it, which is
+// what decides who is owed: whoever held on that date is paid, weeks later. It
+// is the date this system can match a holding against, and it is a calendar day
+// for the same reason DailyClose.Date is.
+//
+// Amount is per share in minor units, like every other price here.
+type Dividend struct {
+	ExDate string
+	Amount int64
 }
 
 // Fetch returns the current quote for one Yahoo ticker.
@@ -273,6 +296,10 @@ type DailyClose struct {
 type History struct {
 	Currency models.Currency
 	Closes   []DailyClose
+	// Dividends the provider reported over the same window. They arrive in the
+	// same response as the closes, so learning what a holding paid costs no
+	// extra request — it is the same call the price sync already makes.
+	Dividends []Dividend
 }
 
 // History fetches daily closing prices for ticker over [from, to].
@@ -290,7 +317,10 @@ func (c *Client) History(ctx context.Context, ticker string, from, to time.Time)
 		return History{}, fmt.Errorf("history window ends (%s) before it starts (%s)",
 			to.Format(time.DateOnly), from.Format(time.DateOnly))
 	}
-	query := fmt.Sprintf("interval=1d&period1=%d&period2=%d",
+	// events=div comes along for free: the provider returns distributions in the
+	// same payload as the closes, so a price sync learns what was paid without a
+	// second round trip.
+	query := fmt.Sprintf("interval=1d&period1=%d&period2=%d&events=div",
 		from.Unix(), to.Add(24*time.Hour).Unix())
 
 	result, err := c.chart(ctx, ticker, query)
@@ -317,7 +347,31 @@ func (c *Client) History(ctx context.Context, ticker string, from, to time.Time)
 			Close: toMinorUnits(*closes[i]),
 		})
 	}
-	return History{Currency: currency, Closes: out}, nil
+	return History{
+		Currency:  currency,
+		Closes:    out,
+		Dividends: dividendsOf(result),
+	}, nil
+}
+
+// dividendsOf reads the distributions out of a chart result, in date order.
+//
+// A zero or negative amount is skipped rather than recorded: the provider
+// occasionally carries an empty event, and a dividend of nothing is not a thing
+// that happened. The map's keys are ignored — each value carries its own date.
+func dividendsOf(result chartResult) []Dividend {
+	out := make([]Dividend, 0, len(result.Events.Dividends))
+	for _, event := range result.Events.Dividends {
+		if event.Amount <= 0 || event.Date == 0 {
+			continue
+		}
+		out = append(out, Dividend{
+			ExDate: barDate(event.Date),
+			Amount: toMinorUnits(event.Amount),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ExDate < out[j].ExDate })
+	return out
 }
 
 // barDate names the session a daily bar belongs to.

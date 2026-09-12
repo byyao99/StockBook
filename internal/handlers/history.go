@@ -31,9 +31,13 @@ type syncResult struct {
 	// Added counts the sessions this call wrote; Sessions is how many the
 	// instrument holds afterwards. A run that adds nothing but already holds
 	// years is healthy, and only the second number says so.
-	Added    int    `json:"added"`
-	Sessions int64  `json:"sessions"`
-	Error    string `json:"error,omitempty"`
+	Added    int   `json:"added"`
+	Sessions int64 `json:"sessions"`
+	// Dividends counts the distributions learned in the same response. They cost
+	// no extra request — the provider returns them alongside the closes — and a
+	// run that finds one is how an unrecorded payout first becomes visible.
+	Dividends int    `json:"dividends"`
+	Error     string `json:"error,omitempty"`
 }
 
 const (
@@ -189,6 +193,23 @@ func (h *InstrumentHandler) syncOne(ctx context.Context, item models.Instrument)
 		return result
 	}
 
+	// Distributions arrive in the same payload, so a price sync also learns what
+	// each holding paid. They are stored as what the market did, never posted to
+	// the ledger: what the user banked is theirs to record, and the prompt built
+	// on these rows is what asks them to.
+	events := make([]models.DividendEvent, 0, len(history.Dividends))
+	for _, dividend := range history.Dividends {
+		events = append(events, models.DividendEvent{
+			ExDate: dividend.ExDate,
+			Amount: dividend.Amount,
+		})
+	}
+	if err := h.db.SaveDividendEvents(item.ID, events); err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		return result
+	}
+
 	sessions, err := h.db.CountDailyCloses(item.ID)
 	if err != nil {
 		result.Status = "failed"
@@ -199,6 +220,7 @@ func (h *InstrumentHandler) syncOne(ctx context.Context, item models.Instrument)
 	result.Status = "synced"
 	result.Added = len(rows)
 	result.Sessions = sessions
+	result.Dividends = len(events)
 	return result
 }
 

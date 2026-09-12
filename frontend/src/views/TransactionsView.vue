@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { instrumentApi, settingsApi, transactionApi } from '../api/client'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { instrumentApi, reportApi, settingsApi, transactionApi } from '../api/client'
 import {
   bpsToListPercent,
   formatCents,
@@ -27,6 +27,7 @@ import type {
   FeeProfile,
   FeeProfileKey,
   Instrument,
+  PendingDividend,
   Transaction,
   TransactionSide,
 } from '../types'
@@ -46,6 +47,22 @@ const instrumentFilter = ref('')
 const sideFilter = ref<TransactionSide | ''>('')
 
 const editingId = ref<string | null>(null)
+// Distributions the book was entitled to with no entry against them. A prompt,
+// never a posting: the provider knows what the security paid, the ledger knows
+// what the user banked, and only the user can say the second. Recording one
+// fills this form in and leaves the saving to them.
+const pendingDividends = ref<PendingDividend[]>([])
+// A book that has never recorded a dividend can be owed dozens, and all of them
+// at the top of this page would bury the form they are asking the reader to
+// use. The newest few are shown — those are the ones still worth chasing — and
+// the count is always the true one, so nothing is hidden by being summarized.
+const PENDING_SHOWN = 5
+const showAllPending = ref(false)
+const visiblePending = computed(() =>
+  showAllPending.value ? pendingDividends.value : pendingDividends.value.slice(0, PENDING_SHOWN),
+)
+// The form, so recording a prompted dividend can bring it into view.
+const formSection = ref<HTMLElement | null>(null)
 
 /**
  * Whether the user has typed into the price or fee field themselves.
@@ -249,6 +266,8 @@ async function load() {
     })
     entries.value = page.items
     total.value = page.pagination.total
+    // Reloaded with the ledger, so recording one makes its prompt disappear.
+    pendingDividends.value = await reportApi.pendingDividends()
     if (entries.value.length === 0 && offset.value > 0) {
       offset.value = Math.max(0, offset.value - PAGE_SIZE)
       await load()
@@ -341,6 +360,39 @@ function startEdit(t: Transaction) {
   })
 }
 
+// recordDividend fills the form in from a distribution the provider reported and
+// scrolls to it. Nothing is saved: the amount that actually arrives differs from
+// the announced one by whatever was withheld, which this system does not guess,
+// so the user confirms every figure before it becomes a fact.
+async function recordDividend(pending: PendingDividend) {
+  resetForm()
+  form.instrumentId = pending.instrument_id
+
+  // The instrument watcher clears both touched flags, and it runs a tick later.
+  // Filling the numbers in before it does means it resets them underneath us and
+  // the price suggestion then wipes the announced amount — the field is cleared
+  // for any entry not dated today, and this one is dated at the ex-date.
+  // Waiting for it to run first is what makes the prefill survive.
+  await nextTick()
+
+  // Every figure here is the announced one, which the user is expected to
+  // correct against what actually arrived. Both fields count as touched so no
+  // suggestion can overwrite what they type with a guess of its own.
+  priceTouched.value = true
+  feeTouched.value = true
+  Object.assign(form, {
+    side: 'dividend' as TransactionSide,
+    quantity: pending.shares,
+    priceDollars: fromCents(pending.per_share),
+    feeDollars: null,
+    // Dated at the ex-date as a starting point, not a claim: the cash lands
+    // weeks later and only the user knows when it did.
+    tradedAt: pending.ex_date,
+    note: '',
+  })
+  formSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 async function submit() {
   error.value = ''
   success.value = ''
@@ -400,7 +452,43 @@ onMounted(async () => {
     <p v-if="error" class="error">{{ error }}</p>
     <p v-if="success" class="success">{{ success }}</p>
 
-    <section class="card">
+    <!-- A payout arrives weeks after anyone was thinking about the stock, so the
+         way it goes missing is that nobody remembers to write it down. This is
+         the only thing in the system that can notice. It fills the form in and
+         stops there: the announced amount is before whatever was withheld, and
+         only the reader knows what actually landed. -->
+    <section v-if="pendingDividends.length > 0" class="card pending">
+      <h2 class="section-title">
+        Dividends not recorded
+        <span class="muted">· {{ pendingDividends.length }}</span>
+      </h2>
+      <p class="notice">
+        These were paid on shares the book held on the ex-date and have no entry
+        against them. The amounts are what was announced per share — before any
+        tax withheld, which is yours to fill in from what actually arrived.
+      </p>
+      <ul class="pending-list">
+        <li v-for="p in visiblePending" :key="p.instrument_id + p.ex_date">
+          <strong>{{ p.symbol }}</strong>
+          <span class="muted">{{ p.name }}</span>
+          <span class="muted">
+            ex {{ p.ex_date }} · {{ formatQty(p.shares) }} shares ×
+            {{ formatCents(p.per_share, p.currency) }}
+          </span>
+          <strong class="num">{{ formatCents(p.estimated, p.currency) }}</strong>
+          <button class="btn-secondary" @click="recordDividend(p)">Record</button>
+        </li>
+      </ul>
+      <button
+        v-if="pendingDividends.length > PENDING_SHOWN"
+        class="btn-secondary show-all"
+        @click="showAllPending = !showAllPending"
+      >
+        {{ showAllPending ? 'Show fewer' : `Show all ${pendingDividends.length}` }}
+      </button>
+    </section>
+
+    <section ref="formSection" class="card">
       <h2 class="section-title">{{ editingId ? 'Edit Trade' : 'Record a Trade' }}</h2>
       <form @submit.prevent="submit">
         <div class="grid">
@@ -672,5 +760,29 @@ onMounted(async () => {
 }
 .table-wrap {
   overflow-x: auto;
+}
+.pending-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pending-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+.pending-list li:last-child {
+  border-bottom: none;
+}
+.pending-list button {
+  width: auto;
+  margin-left: auto;
+}
+.show-all {
+  width: auto;
+  margin-top: 10px;
 }
 </style>

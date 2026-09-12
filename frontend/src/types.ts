@@ -572,3 +572,32 @@ export interface ResearchSyncReport {
     results: FactSyncResult[]
   }
 }
+
+/**
+ * A distribution the book was entitled to and has no ledger entry for.
+ *
+ * This is a **prompt, never a posting**. The provider knows what a security
+ * paid; the ledger knows what the user banked. Those are different facts with
+ * different owners, and writing the first into the second would invent entries.
+ * What it closes is the gap that actually loses money: a payout arrives weeks
+ * after anyone was thinking about the stock and simply never gets written down,
+ * and nothing else in this system can notice that.
+ *
+ * `shares` is what was held on the **ex-date**, not now — shares sold since were
+ * still owed the payout. `estimated` is shares times `per_share` and is
+ * deliberately **before** anything withheld, which this system does not guess:
+ * the amount that actually arrived is the user's to enter.
+ */
+export interface PendingDividend {
+  instrument_id: string
+  symbol: string
+  name: string
+  currency: Currency
+  // The day the shares began trading without the right to the payout, which is
+  // what decides who is owed it. The cash lands weeks later, so the entry the
+  // user eventually writes is dated later than this and deliberately so.
+  ex_date: string
+  per_share: number
+  shares: number
+  estimated: number
+}

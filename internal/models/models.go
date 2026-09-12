@@ -167,6 +167,35 @@ type DailyClose struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// DividendEvent is a distribution the provider says an instrument paid.
+//
+// It is **not** a ledger entry and must never become one on its own. The ledger
+// holds what the user says happened to their money; this holds what the market
+// says happened to the security, which is a different kind of fact with a
+// different owner. Turning one into the other automatically would invent
+// entries — the same thing the hindsight report refuses to do when it declines
+// to model the dividends unsold shares would have received.
+//
+// What it is for is the prompt: the system can see that shares were held on an
+// ex-date and that no dividend entry followed, and say so. Recording it stays
+// the user's act.
+//
+// ExDate is the day the shares began trading without the right to the payout,
+// which is what decides who is owed it — whoever held on that date is paid,
+// typically weeks later. Matching against a holding therefore uses the ex-date
+// while the ledger entry the user eventually writes is dated when the cash
+// actually arrived, and the two are deliberately not the same day.
+//
+// Amount is per share in minor units. The composite key makes a refetch
+// idempotent, exactly as DailyClose's does.
+type DividendEvent struct {
+	InstrumentID string    `gorm:"primaryKey" json:"instrument_id"`
+	ExDate       string    `gorm:"primaryKey" json:"ex_date"`
+	Amount       int64     `json:"amount"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // NewsItem is one headline about a listed company.
 //
 // Unlike everything else stored here it is not a fact about anybody's book: it

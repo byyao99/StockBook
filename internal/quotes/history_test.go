@@ -206,3 +206,61 @@ func TestBarDateNamesTheTradingSession(t *testing.T) {
 		})
 	}
 }
+
+// A real response, trimmed: distributions arrive in the same payload as the
+// closes, keyed by their own timestamp, and the provider's amounts carry float
+// noise that has to round to an exact minor unit.
+const twDividendBody = `{"chart":{"result":[{
+	"meta":{"symbol":"2330.TW","currency":"TWD"},
+	"timestamp":[1751331600,1751418000],
+	"indicators":{"quote":[{"close":[1000.0,1010.5]}]},
+	"events":{"dividends":{
+		"1773705600":{"amount":6.000036,"date":1773705600},
+		"1765411200":{"amount":5.000011,"date":1765411200},
+		"1757980800":{"amount":0,"date":1757980800}
+	}}
+}],"error":null}}`
+
+// Distributions come back with the closes, which is what makes learning them
+// free: it is the request the price sync already makes.
+func TestHistoryReadsDividendsFromTheSameResponse(t *testing.T) {
+	c := serve(t, http.StatusOK, twDividendBody)
+
+	got, err := c.History(context.Background(), "2330.TW",
+		day(t, "2025-07-01"), day(t, "2026-07-01"))
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+
+	// The zero-amount event is dropped: a distribution of nothing is not a thing
+	// that happened, and the provider does carry empty ones.
+	if len(got.Dividends) != 2 {
+		t.Fatalf("got %d dividends, want 2: %+v", len(got.Dividends), got.Dividends)
+	}
+	// Oldest first, whatever order the map iterated in.
+	if got.Dividends[0].ExDate >= got.Dividends[1].ExDate {
+		t.Errorf("dividends out of order: %+v", got.Dividends)
+	}
+	// 5.000011 is the provider's float noise around a NT$5.00 payout.
+	if got.Dividends[0].Amount != 500 {
+		t.Errorf("amount %d, want 500 minor units", got.Dividends[0].Amount)
+	}
+	if got.Dividends[1].Amount != 600 {
+		t.Errorf("amount %d, want 600 minor units", got.Dividends[1].Amount)
+	}
+}
+
+// A response with no events block at all is the ordinary case for an instrument
+// that has never paid, and is not an error.
+func TestHistoryWithoutDividendsIsFine(t *testing.T) {
+	c := serve(t, http.StatusOK, twHistoryBody)
+
+	got, err := c.History(context.Background(), "2330.TW",
+		day(t, "2025-07-01"), day(t, "2025-07-03"))
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(got.Dividends) != 0 {
+		t.Errorf("got %d dividends, want none: %+v", len(got.Dividends), got.Dividends)
+	}
+}
