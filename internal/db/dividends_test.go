@@ -37,7 +37,7 @@ func TestPendingDividendsFindsAnUnrecordedPayout(t *testing.T) {
 		t.Fatalf("got %d pending, want 1: %+v", len(pending), pending)
 	}
 	got := pending[0]
-	if got.Shares != 1000 {
+	if got.Shares != shares(1000) {
 		t.Errorf("shares %d, want 1000", got.Shares)
 	}
 	// 1000 shares at NT$4.00 is NT$4,000, before whatever was withheld.
@@ -132,7 +132,7 @@ func TestPendingDividendsCountsSharesHeldOnTheExDateNotNow(t *testing.T) {
 		t.Fatalf("got %d pending, want the payout the sold shares still earned: %+v",
 			len(pending), pending)
 	}
-	if pending[0].Shares != 1000 {
+	if pending[0].Shares != shares(1000) {
 		t.Errorf("shares %d, want the 1000 held on the ex-date", pending[0].Shares)
 	}
 }

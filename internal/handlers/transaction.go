@@ -46,7 +46,7 @@ func joinSides(sides []models.TransactionSide) string {
 type transactionRequest struct {
 	InstrumentID string                 `json:"instrument_id" binding:"required"`
 	Side         models.TransactionSide `json:"side" binding:"required"`
-	Quantity     int                    `json:"quantity" binding:"required,gt=0"`
+	Quantity     int64                  `json:"quantity" binding:"required,gt=0"`
 	Price        int64                  `json:"price" binding:"required,gte=0"`
 	Fee          int64                  `json:"fee" binding:"omitempty,gte=0"`
 	TradedAt     *time.Time             `json:"traded_at"`
@@ -197,7 +197,7 @@ func (h *TransactionHandler) Get(c *gin.Context) {
 // instrument are absent on purpose: changing either would move the entry to a
 // different position, which is clearer as a delete plus a fresh entry.
 type updateTransactionRequest struct {
-	Quantity int        `json:"quantity" binding:"required,gt=0"`
+	Quantity int64      `json:"quantity" binding:"required,gt=0"`
 	Price    int64      `json:"price" binding:"required,gte=0"`
 	Fee      int64      `json:"fee" binding:"omitempty,gte=0"`
 	TradedAt *time.Time `json:"traded_at"`

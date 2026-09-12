@@ -6,6 +6,7 @@ package db
 import (
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/glebarez/sqlite"
@@ -110,6 +111,7 @@ func Open(dsn string) (*DB, error) {
 		&models.NewsItem{},
 		&models.NewsMention{},
 		&models.FinancialFact{},
+		&models.SchemaMeta{},
 	); err != nil {
 		return nil, err
 	}
@@ -128,6 +130,10 @@ func Open(dsn string) (*DB, error) {
 	sqlDB.SetMaxOpenConns(1)
 
 	d := &DB{db: db}
+	// Before anything reads a quantity: units first, meaning second.
+	if err := d.scaleShareCounts(); err != nil {
+		return nil, err
+	}
 	if err := d.backfillCurrencies(); err != nil {
 		return nil, err
 	}
@@ -135,6 +141,48 @@ func Open(dsn string) (*DB, error) {
 		return nil, err
 	}
 	return d, nil
+}
+
+// scaleShareCounts converts share counts written before they were scaled.
+//
+// Share counts used to be whole shares and are now SharesScale units, so every
+// stored quantity is out by that factor until it is multiplied. Positions are
+// rewritten alongside transactions rather than replayed, because a replay reads
+// the very quantities being corrected.
+//
+// **It must run exactly once**, and nothing in the data says whether it already
+// has — 100 is a plausible number of whole shares and a plausible 0.0001 of
+// one — so a marker row decides, not a heuristic. Running it twice would
+// multiply every holding by a million and there would be no way back.
+//
+// The whole conversion is one transaction: a book half in one unit and half in
+// the other is worse than one that failed to start.
+func (d *DB) scaleShareCounts() error {
+	var marker models.SchemaMeta
+	err := d.db.Where("key = ?", models.SharesScaledKey).First(&marker).Error
+	if err == nil {
+		return nil // already converted
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	return d.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.Transaction{}).
+			Where("1 = 1").
+			Update("quantity", gorm.Expr("quantity * ?", models.SharesScale)).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.Position{}).
+			Where("1 = 1").
+			Update("quantity", gorm.Expr("quantity * ?", models.SharesScale)).Error; err != nil {
+			return err
+		}
+		return tx.Create(&models.SchemaMeta{
+			Key:   models.SharesScaledKey,
+			Value: strconv.FormatInt(models.SharesScale, 10),
+		}).Error
+	})
 }
 
 // backfillCurrencies gives a currency to instruments created before the column

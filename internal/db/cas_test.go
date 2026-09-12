@@ -32,14 +32,14 @@ func TestWritePositionRejectsStaleUpdate(t *testing.T) {
 
 	// Our write is computed from what we read a moment ago, so it must be
 	// refused rather than silently discarding the other writer's 5 shares.
-	err = writePosition(s.db, stale, found, models.PositionState{Quantity: 99, CostBasis: 1, RealizedPL: 0})
+	err = writePosition(s.db, stale, found, models.PositionState{Quantity: shares(99), CostBasis: 1, RealizedPL: 0})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("got %v, want ErrConflict", err)
 	}
 
 	// The other writer's result must still be intact.
 	after := storedState(t, s, user.ID, inst.ID)
-	if after.Quantity != 15 {
+	if after.Quantity != shares(15) {
 		t.Errorf("quantity = %d, want 15 (the stale write clobbered it)", after.Quantity)
 	}
 }
@@ -89,10 +89,10 @@ func TestWritePositionRejectsDuplicateInsert(t *testing.T) {
 	}
 	second := first
 
-	if err := writePosition(s.db, first, false, models.PositionState{Quantity: 10, CostBasis: 90000}); err != nil {
+	if err := writePosition(s.db, first, false, models.PositionState{Quantity: shares(10), CostBasis: 90000}); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
-	err = writePosition(s.db, second, false, models.PositionState{Quantity: 7, CostBasis: 70000})
+	err = writePosition(s.db, second, false, models.PositionState{Quantity: shares(7), CostBasis: 70000})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("second insert: got %v, want ErrConflict", err)
 	}
@@ -106,7 +106,7 @@ func TestWritePositionRejectsDuplicateInsert(t *testing.T) {
 	if count != 1 {
 		t.Errorf("%d position rows, want 1", count)
 	}
-	if got := storedState(t, s, user.ID, inst.ID); got.Quantity != 10 {
+	if got := storedState(t, s, user.ID, inst.ID); got.Quantity != shares(10) {
 		t.Errorf("quantity = %d, want the winner's 10", got.Quantity)
 	}
 }
@@ -123,7 +123,7 @@ func TestWritePositionAcceptsFreshUpdate(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("loadPosition: %v", err)
 	}
-	want := models.PositionState{Quantity: 20, CostBasis: 180000, RealizedPL: 5}
+	want := models.PositionState{Quantity: shares(20), CostBasis: 180000, RealizedPL: 5}
 	if err := writePosition(s.db, current, found, want); err != nil {
 		t.Fatalf("writePosition: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestPositionUniqueIndexIsEnforced(t *testing.T) {
 	inst := seedInstrument(t, s, "2330")
 
 	base := models.Position{
-		ID: uuid.NewString(), UserID: user.ID, InstrumentID: inst.ID, Quantity: 1,
+		ID: uuid.NewString(), UserID: user.ID, InstrumentID: inst.ID, Quantity: shares(1),
 	}
 	if err := s.db.Create(&base).Error; err != nil {
 		t.Fatalf("first insert: %v", err)

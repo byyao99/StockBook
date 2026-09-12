@@ -5,11 +5,11 @@ import {
   bpsToListPercent,
   formatCents,
   formatPpmPercent,
-  formatQty,
   formatSignedOrUnknown,
   fromCents,
   toCents,
 } from '../money'
+import { formatShares, fromShares, toShares } from '../shares'
 import {
   FEE_PROFILE_LABELS,
   chargeMode,
@@ -350,7 +350,7 @@ function startEdit(t: Transaction) {
   Object.assign(form, {
     instrumentId: t.instrument_id,
     side: t.side,
-    quantity: t.quantity,
+    quantity: toShares(t.quantity),
     priceDollars: fromCents(t.price),
     feeDollars: fromCents(t.fee),
     feeProfileKey: '',
@@ -382,7 +382,7 @@ async function recordDividend(pending: PendingDividend) {
   feeTouched.value = true
   Object.assign(form, {
     side: 'dividend' as TransactionSide,
-    quantity: pending.shares,
+    quantity: toShares(pending.shares),
     priceDollars: fromCents(pending.per_share),
     feeDollars: null,
     // Dated at the ex-date as a starting point, not a claim: the cash lands
@@ -400,7 +400,7 @@ async function submit() {
   try {
     if (editingId.value) {
       await transactionApi.update(editingId.value, {
-        quantity: form.quantity ?? 0,
+        quantity: fromShares(form.quantity ?? 0),
         price: toCents(form.priceDollars ?? 0),
         fee: toCents(form.feeDollars ?? 0),
         traded_at: tradedAt,
@@ -411,7 +411,7 @@ async function submit() {
       await transactionApi.create({
         instrument_id: form.instrumentId,
         side: form.side,
-        quantity: form.quantity ?? 0,
+        quantity: fromShares(form.quantity ?? 0),
         price: toCents(form.priceDollars ?? 0),
         fee: toCents(form.feeDollars ?? 0),
         traded_at: tradedAt,
@@ -427,7 +427,7 @@ async function submit() {
 }
 
 async function remove(t: Transaction) {
-  if (!confirm(`Delete this ${t.side} of ${formatQty(t.quantity)} ${t.symbol}?`)) return
+  if (!confirm(`Delete this ${t.side} of ${formatShares(t.quantity)} ${t.symbol}?`)) return
   error.value = ''
   success.value = ''
   try {
@@ -472,7 +472,7 @@ onMounted(async () => {
           <strong>{{ p.symbol }}</strong>
           <span class="muted">{{ p.name }}</span>
           <span class="muted">
-            ex {{ p.ex_date }} · {{ formatQty(p.shares) }} shares ×
+            ex {{ p.ex_date }} · {{ formatShares(p.shares) }} shares ×
             {{ formatCents(p.per_share, p.currency) }}
           </span>
           <strong class="num">{{ formatCents(p.estimated, p.currency) }}</strong>
@@ -517,7 +517,7 @@ onMounted(async () => {
                both without a second, near-identical one. -->
           <div class="field">
             <label>{{ isDividend ? 'Shares held' : 'Shares' }}</label>
-            <input v-model.number="form.quantity" type="number" min="1" step="1" required />
+            <input v-model.number="form.quantity" type="number" min="0" step="any" required />
           </div>
           <div class="field">
             <label>
@@ -645,7 +645,7 @@ onMounted(async () => {
               <td>
                 <span :class="['badge', sideBadge(t.side)]">{{ t.side }}</span>
               </td>
-              <td class="num">{{ formatQty(t.quantity) }}</td>
+              <td class="num">{{ formatShares(t.quantity) }}</td>
               <td class="num">{{ formatCents(t.price, currencyOf(t.instrument_id)) }}</td>
               <td class="num">{{ formatCents(t.fee, currencyOf(t.instrument_id)) }}</td>
               <td class="num">{{ formatCents(t.net_amount, currencyOf(t.instrument_id)) }}</td>

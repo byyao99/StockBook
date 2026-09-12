@@ -4,6 +4,7 @@
 // the frontend's contract test surface: every one of them must return null,
 // never zero, when the holding cannot be valued. An unknown market value shown
 // as $0.00 would read as a total loss.
+import { toShares } from './shares'
 import type { CurrencySummary, Position } from './types'
 
 /**
@@ -13,16 +14,25 @@ import type { CurrencySummary, Position } from './types'
  * this is the one place the division happens — at the display edge, where a
  * fractional cent is a formatting question rather than an accounting error.
  * The result is deliberately not rounded; formatCents does that.
+ *
+ * `quantity` arrives in scaled units, so it is converted first: dividing by the
+ * raw figure would give the cost of a millionth of a share.
  */
 export function averageCost(p: Position): number | null {
   if (p.quantity === 0) return null
-  return p.cost_basis / p.quantity
+  return p.cost_basis / toShares(p.quantity)
 }
 
-/** Market value in cents, or null when the instrument has no quote. */
+/**
+ * Market value in cents, or null when the instrument has no quote.
+ *
+ * `last_price` is the price of one **share**, so the scaled quantity has to
+ * come back to shares before the multiplication — otherwise every valuation on
+ * the page is out by a factor of a million.
+ */
 export function marketValue(p: Position): number | null {
   if (p.last_price === null) return null
-  return p.quantity * p.last_price
+  return toShares(p.quantity) * p.last_price
 }
 
 /** Unrealized profit/loss in cents, or null when the holding cannot be valued. */

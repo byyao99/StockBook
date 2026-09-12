@@ -5,18 +5,23 @@ import (
 	"testing"
 )
 
-// buy and sell build transactions for the fold tests. Prices and fees are cents.
-func buy(qty int, price, fee int64) Transaction {
-	return Transaction{Side: SideBuy, Quantity: qty, Price: price, Fee: fee}
+// shares converts a whole-share count to the scaled units the ledger stores, so
+// these tests can go on reading as share counts rather than as millionths.
+func shares(n int64) int64 { return n * SharesScale }
+
+// buy and sell build transactions for the fold tests. Prices and fees are cents;
+// qty is whole shares, scaled here.
+func buy(qty int64, price, fee int64) Transaction {
+	return Transaction{Side: SideBuy, Quantity: shares(qty), Price: price, Fee: fee}
 }
 
-func sell(qty int, price, fee int64) Transaction {
-	return Transaction{Side: SideSell, Quantity: qty, Price: price, Fee: fee}
+func sell(qty int64, price, fee int64) Transaction {
+	return Transaction{Side: SideSell, Quantity: shares(qty), Price: price, Fee: fee}
 }
 
 // dividend pays perShare on qty shares, less any withholding in fee.
-func dividend(qty int, perShare, fee int64) Transaction {
-	return Transaction{Side: SideDividend, Quantity: qty, Price: perShare, Fee: fee}
+func dividend(qty int64, perShare, fee int64) Transaction {
+	return Transaction{Side: SideDividend, Quantity: shares(qty), Price: perShare, Fee: fee}
 }
 
 // fold applies a whole sequence, failing the test on the first error.
@@ -42,24 +47,24 @@ func TestApplyMovingAverage(t *testing.T) {
 		{
 			name: "single buy",
 			txs:  []Transaction{buy(100, 5000, 0)},
-			want: PositionState{Quantity: 100, CostBasis: 500000},
+			want: PositionState{Quantity: shares(100), CostBasis: 500000},
 		},
 		{
 			name: "two buys average the cost",
 			txs:  []Transaction{buy(100, 5000, 0), buy(100, 7000, 0)},
-			want: PositionState{Quantity: 200, CostBasis: 1200000},
+			want: PositionState{Quantity: shares(200), CostBasis: 1200000},
 		},
 		{
 			// Sell half of a 200-share position averaging 60.00: half the cost
 			// (600000) is released, proceeds are 800000, so 200000 is banked.
 			name: "partial sell releases cost proportionally",
 			txs:  []Transaction{buy(100, 5000, 0), buy(100, 7000, 0), sell(100, 8000, 0)},
-			want: PositionState{Quantity: 100, CostBasis: 600000, RealizedPL: 200000},
+			want: PositionState{Quantity: shares(100), CostBasis: 600000, RealizedPL: 200000},
 		},
 		{
 			name: "buy fees join the cost basis",
 			txs:  []Transaction{buy(100, 5000, 1425)},
-			want: PositionState{Quantity: 100, CostBasis: 501425},
+			want: PositionState{Quantity: shares(100), CostBasis: 501425},
 		},
 		{
 			// Sell fees (brokerage plus transaction tax) come off the proceeds,
@@ -78,7 +83,7 @@ func TestApplyMovingAverage(t *testing.T) {
 			// realized total — realized P/L is cumulative over the account's life.
 			name: "re-entry keeps realized but resets cost",
 			txs:  []Transaction{buy(10, 1000, 0), sell(10, 1500, 0), buy(5, 2000, 0)},
-			want: PositionState{Quantity: 5, CostBasis: 10000, RealizedPL: 5000},
+			want: PositionState{Quantity: shares(5), CostBasis: 10000, RealizedPL: 5000},
 		},
 	}
 
@@ -206,11 +211,11 @@ func TestApplyRejectsOversell(t *testing.T) {
 }
 
 func TestApplyIsPure(t *testing.T) {
-	original := PositionState{Quantity: 10, CostBasis: 10000}
+	original := PositionState{Quantity: shares(10), CostBasis: 10000}
 	if _, err := original.Apply(sell(5, 2000, 0)); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if (original != PositionState{Quantity: 10, CostBasis: 10000}) {
+	if (original != PositionState{Quantity: shares(10), CostBasis: 10000}) {
 		t.Errorf("receiver was mutated: %+v", original)
 	}
 }
@@ -247,20 +252,52 @@ func TestSideValid(t *testing.T) {
 	}
 }
 
-func TestDivRoundHalfUp(t *testing.T) {
-	tests := []struct{ a, b, want int64 }{
-		{10, 4, 3},      // 2.5 rounds away from zero
-		{14, 4, 4},      // 3.5 rounds away from zero
-		{4001, 4, 1000}, // 1000.25 rounds down
-		{4003, 4, 1001}, // 1000.75 rounds up
-		{100, 10, 10},   // exact
-		{0, 7, 0},
-		{5, 0, 0}, // guard: division by zero yields zero rather than panicking
+func TestMulDivRoundHalfUp(t *testing.T) {
+	tests := []struct{ a, b, c, want int64 }{
+		{10, 1, 4, 3},      // 2.5 rounds away from zero
+		{14, 1, 4, 4},      // 3.5 rounds away from zero
+		{4001, 1, 4, 1000}, // 1000.25 rounds down
+		{4003, 1, 4, 1001}, // 1000.75 rounds up
+		{100, 1, 10, 10},   // exact
+		{0, 5, 7, 0},
+		{5, 1, 0, 0},    // guard: division by zero yields zero rather than panicking
+		{-10, 1, 4, -3}, // negatives round away from zero too
+		{10, -1, 4, -3},
 	}
 	for _, tc := range tests {
-		if got := divRoundHalfUp(tc.a, tc.b); got != tc.want {
-			t.Errorf("divRoundHalfUp(%d, %d) = %d, want %d", tc.a, tc.b, got, tc.want)
+		if got := mulDivRoundHalfUp(tc.a, tc.b, tc.c); got != tc.want {
+			t.Errorf("mulDivRoundHalfUp(%d, %d, %d) = %d, want %d",
+				tc.a, tc.b, tc.c, got, tc.want)
 		}
+	}
+}
+
+// The product is computed in arbitrary precision because with scaled share
+// counts it stopped reliably fitting in an int64. A cost basis of NT$92M on a
+// 100,000-share position overflows the naive multiply, and a wrapped product is
+// silently wrong rather than loudly.
+func TestMulDivSurvivesAProductLargerThanInt64(t *testing.T) {
+	cost := int64(9_200_000_000) // NT$92M in cents
+	qty := 100_000 * SharesScale // 100,000 shares in scaled units
+	if got := mulDivRoundHalfUp(cost, qty, qty); got != cost {
+		t.Errorf("releasing the whole position gave %d, want the cost basis %d", got, cost)
+	}
+	// Half the position releases exactly half the cost, with no wrap in between.
+	if got := mulDivRoundHalfUp(cost, qty/2, qty); got != cost/2 {
+		t.Errorf("releasing half gave %d, want %d", got, cost/2)
+	}
+}
+
+// Fractional shares put a rounding step where whole ones never needed one, and
+// it has to happen exactly once, on the money.
+func TestGrossRoundsFractionalSharesOnce(t *testing.T) {
+	// 2.79 shares at $10.01 is $27.9279 — not a whole cent, and never will be.
+	if got := Gross(2_790_000, 1001); got != 2793 {
+		t.Errorf("Gross = %d, want 2793 cents", got)
+	}
+	// A whole-share buy is still exact, as it always was.
+	if got := Gross(shares(100), 10_000); got != 1_000_000 {
+		t.Errorf("Gross = %d, want 1000000 cents", got)
 	}
 }
 

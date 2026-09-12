@@ -52,9 +52,13 @@ func day(n int) time.Time {
 }
 
 // entry is a compact ledger entry for the table-driven tests.
+// shares converts a whole-share count to the scaled units the ledger stores, so
+// these tests go on reading as share counts rather than as millionths.
+func shares(n int64) int64 { return n * models.SharesScale }
+
 type entry struct {
 	side  models.TransactionSide
-	qty   int
+	qty   int64
 	price int64
 	fee   int64
 	day   int
@@ -68,7 +72,7 @@ func record(t *testing.T, s *DB, userID, instrumentID string, e entry) (models.T
 		UserID:       userID,
 		InstrumentID: instrumentID,
 		Side:         e.side,
-		Quantity:     e.qty,
+		Quantity:     shares(e.qty),
 		Price:        e.price,
 		Fee:          e.fee,
 		TradedAt:     day(e.day),
@@ -172,7 +176,7 @@ func TestBackdatedEntryReplaysPosition(t *testing.T) {
 	// Sanity-check the arithmetic rather than only checking the two paths agree:
 	// 200 shares costing 1,600,000 average 8000; selling 50 releases 400,000 and
 	// brings in 475,000, so 75,000 is banked and 1,200,000 of cost remains.
-	if want != (models.PositionState{Quantity: 150, CostBasis: 1200000, RealizedPL: 75000}) {
+	if want != (models.PositionState{Quantity: shares(150), CostBasis: 1200000, RealizedPL: 75000}) {
 		t.Errorf("unexpected state %+v", want)
 	}
 }
@@ -258,7 +262,7 @@ func TestDeletingASafeEntryReplaysPosition(t *testing.T) {
 		t.Errorf("materialized %+v != replayed %+v", stored, replayed)
 	}
 	// 100 bought at 50.00, 50 sold at 60.00: half the cost released, 50,000 banked.
-	if stored != (models.PositionState{Quantity: 50, CostBasis: 250000, RealizedPL: 50000}) {
+	if stored != (models.PositionState{Quantity: shares(50), CostBasis: 250000, RealizedPL: 50000}) {
 		t.Errorf("unexpected state after delete: %+v", stored)
 	}
 }
@@ -273,7 +277,7 @@ func TestUpdateTransactionReplaysPosition(t *testing.T) {
 
 	// Correct the purchase price: 100 shares at 55.00 rather than 50.00.
 	if _, err := s.UpdateTransaction(buy.ID, user.ID, TransactionUpdate{
-		Quantity: 100, Price: 5500, TradedAt: day(1),
+		Quantity: shares(100), Price: 5500, TradedAt: day(1),
 	}); err != nil {
 		t.Fatalf("UpdateTransaction: %v", err)
 	}
@@ -288,7 +292,7 @@ func TestUpdateTransactionReplaysPosition(t *testing.T) {
 	}
 	// 550,000 cost over 100 shares; selling 40 releases 220,000 against 280,000
 	// of proceeds, banking 60,000 and leaving 330,000.
-	if stored != (models.PositionState{Quantity: 60, CostBasis: 330000, RealizedPL: 60000}) {
+	if stored != (models.PositionState{Quantity: shares(60), CostBasis: 330000, RealizedPL: 60000}) {
 		t.Errorf("unexpected state after edit: %+v", stored)
 	}
 }
@@ -305,7 +309,7 @@ func TestUpdateThatUnderminesALaterSellIsRejected(t *testing.T) {
 	before := storedState(t, s, user.ID, inst.ID)
 
 	_, err := s.UpdateTransaction(buy.ID, user.ID, TransactionUpdate{
-		Quantity: 50, Price: 5000, TradedAt: day(1),
+		Quantity: shares(50), Price: 5000, TradedAt: day(1),
 	})
 	if !errors.Is(err, models.ErrInsufficientShares) {
 		t.Fatalf("got %v, want ErrInsufficientShares", err)
@@ -317,7 +321,7 @@ func TestUpdateThatUnderminesALaterSellIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTransaction: %v", err)
 	}
-	if original.Quantity != 100 {
+	if original.Quantity != shares(100) {
 		t.Errorf("quantity was written despite the rejection: %d", original.Quantity)
 	}
 }
@@ -333,10 +337,10 @@ func TestPositionsAreScopedPerUser(t *testing.T) {
 	mustRecord(t, s, alice.ID, inst.ID, entry{models.SideBuy, 10, 1000, 0, 1})
 	mustRecord(t, s, bob.ID, inst.ID, entry{models.SideBuy, 5, 2000, 0, 1})
 
-	if got := storedState(t, s, alice.ID, inst.ID); got.Quantity != 10 || got.CostBasis != 10000 {
+	if got := storedState(t, s, alice.ID, inst.ID); got.Quantity != shares(10) || got.CostBasis != 10000 {
 		t.Errorf("alice: %+v", got)
 	}
-	if got := storedState(t, s, bob.ID, inst.ID); got.Quantity != 5 || got.CostBasis != 10000 {
+	if got := storedState(t, s, bob.ID, inst.ID); got.Quantity != shares(5) || got.CostBasis != 10000 {
 		t.Errorf("bob: %+v", got)
 	}
 	// Bob cannot read Alice's ledger entry, even knowing its ID.
@@ -357,7 +361,7 @@ func TestNetAmountIsServerComputed(t *testing.T) {
 	// A caller-supplied NetAmount must be ignored, not persisted.
 	created, err := s.CreateTransaction(models.Transaction{
 		ID: uuid.NewString(), UserID: user.ID, InstrumentID: inst.ID,
-		Side: models.SideBuy, Quantity: 10, Price: 1000, Fee: 25,
+		Side: models.SideBuy, Quantity: shares(10), Price: 1000, Fee: 25,
 		NetAmount: 999999, TradedAt: day(1),
 	})
 	if err != nil {
@@ -398,7 +402,7 @@ func TestCreateTransactionRejectsUnknownInstrument(t *testing.T) {
 
 	_, err := s.CreateTransaction(models.Transaction{
 		ID: uuid.NewString(), UserID: user.ID, InstrumentID: "does-not-exist",
-		Side: models.SideBuy, Quantity: 1, Price: 100, TradedAt: day(1),
+		Side: models.SideBuy, Quantity: shares(1), Price: 100, TradedAt: day(1),
 	})
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)

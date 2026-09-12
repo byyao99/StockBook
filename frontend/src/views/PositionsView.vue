@@ -8,10 +8,10 @@ import {
   formatCents,
   formatCentsOrUnknown,
   formatPercentOrUnknown,
-  formatQty,
   formatSignedCents,
   formatSignedOrUnknown,
 } from '../money'
+import { formatShares } from '../shares'
 import {
   averageCost,
   isUnpriced,
@@ -316,7 +316,7 @@ onMounted(async () => {
                 <div class="muted">{{ p.name }}</div>
               </td>
               <td class="muted">{{ p.currency }}</td>
-              <td class="num">{{ formatQty(p.quantity) }}</td>
+              <td class="num">{{ formatShares(p.quantity) }}</td>
               <td class="num">{{ formatCentsOrUnknown(averageCost(p), p.currency) }}</td>
               <td class="num">{{ formatCents(p.cost_basis, p.currency) }}</td>
               <td class="num">

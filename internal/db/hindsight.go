@@ -26,8 +26,8 @@ type HindsightRow struct {
 	Market       string          `json:"market"`
 	Currency     models.Currency `json:"currency"`
 	Sells        int             `json:"sells"`
-	SharesSold   int             `json:"shares_sold"`
-	SharesHeld   int             `json:"shares_held"`
+	SharesSold   int64           `json:"shares_sold"`
+	SharesHeld   int64           `json:"shares_held"`
 	Proceeds     int64           `json:"proceeds"`
 	ValueIfHeld  int64           `json:"value_if_held"`
 	SellingGain  int64           `json:"selling_gain"`
@@ -43,7 +43,7 @@ type HindsightRow struct {
 type HindsightSummary struct {
 	Currency      models.Currency `json:"currency"`
 	Sells         int             `json:"sells"`
-	SharesSold    int             `json:"shares_sold"`
+	SharesSold    int64           `json:"shares_sold"`
 	Proceeds      int64           `json:"proceeds"`
 	ValueIfHeld   int64           `json:"value_if_held"`
 	SellingGain   int64           `json:"selling_gain"`
@@ -58,7 +58,7 @@ type hindsightScanRow struct {
 	Name         string
 	Market       string
 	Currency     models.Currency
-	Quantity     int
+	Quantity     int64
 	NetAmount    int64
 	LastPrice    *int64
 }
@@ -147,7 +147,7 @@ func (d *DB) HindsightReport(userID string, from, to *time.Time) ([]HindsightSum
 			b.byID[s.InstrumentID] = row
 		}
 
-		valueIfHeld := int64(s.Quantity) * *s.LastPrice
+		valueIfHeld := models.Gross(s.Quantity, *s.LastPrice)
 		row.Sells++
 		row.SharesSold += s.Quantity
 		row.Proceeds += s.NetAmount
@@ -193,12 +193,12 @@ func (d *DB) HindsightReport(userID string, from, to *time.Time) ([]HindsightSum
 }
 
 // sharesHeld maps instrument ID to the shares userID holds now.
-func (d *DB) sharesHeld(userID string) (map[string]int, error) {
+func (d *DB) sharesHeld(userID string) (map[string]int64, error) {
 	var positions []models.Position
 	if err := d.db.Where("user_id = ?", userID).Find(&positions).Error; err != nil {
 		return nil, err
 	}
-	held := make(map[string]int, len(positions))
+	held := make(map[string]int64, len(positions))
 	for _, p := range positions {
 		held[p.InstrumentID] = p.Quantity
 	}

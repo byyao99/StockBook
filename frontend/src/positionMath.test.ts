@@ -9,6 +9,7 @@ import {
   unpricedCount,
   unrealizedPL,
 } from './positionMath'
+import { fromShares } from './shares'
 import type { CurrencySummary, Position } from './types'
 
 // position builds a holding with sensible defaults for the fields under test.
@@ -20,7 +21,8 @@ function position(overrides: Partial<Position> = {}): Position {
     name: 'TSMC',
     market: 'TWSE',
     currency: 'TWD',
-    quantity: 100,
+    // Quantity is in scaled units on the wire; these tests speak whole shares.
+    quantity: fromShares(100),
     cost_basis: 900_000, // 100 shares averaging $90.00
     realized_pl: 0,
     last_price: 100_000, // $1000.00
@@ -34,23 +36,23 @@ function position(overrides: Partial<Position> = {}): Position {
 
 describe('averageCost', () => {
   it('divides the total cost by the shares held', () => {
-    expect(averageCost(position({ quantity: 100, cost_basis: 900_000 }))).toBe(9_000)
+    expect(averageCost(position({ quantity: fromShares(100), cost_basis: 900_000 }))).toBe(9_000)
   })
 
   it('does not round, so an uneven basis keeps its fractional cent', () => {
     // 4 shares costing 4001 cents average 1000.25 — the backend deliberately
     // never stores this number precisely because rounding it would drift.
-    expect(averageCost(position({ quantity: 4, cost_basis: 4001 }))).toBe(1000.25)
+    expect(averageCost(position({ quantity: fromShares(4), cost_basis: 4001 }))).toBe(1000.25)
   })
 
   it('is null for a closed holding rather than dividing by zero', () => {
-    expect(averageCost(position({ quantity: 0, cost_basis: 0 }))).toBeNull()
+    expect(averageCost(position({ quantity: fromShares(0), cost_basis: 0 }))).toBeNull()
   })
 })
 
 describe('marketValue', () => {
   it('multiplies the shares held by the quote', () => {
-    expect(marketValue(position({ quantity: 100, last_price: 100_000 }))).toBe(10_000_000)
+    expect(marketValue(position({ quantity: fromShares(100), last_price: 100_000 }))).toBe(10_000_000)
   })
 
   // The most important rule in this module: an unvalued holding must never
@@ -62,13 +64,13 @@ describe('marketValue', () => {
 
 describe('unrealizedPL', () => {
   it('is the market value less the cost still tied up', () => {
-    expect(unrealizedPL(position({ quantity: 100, cost_basis: 900_000, last_price: 100_000 }))).toBe(
+    expect(unrealizedPL(position({ quantity: fromShares(100), cost_basis: 900_000, last_price: 100_000 }))).toBe(
       9_100_000,
     )
   })
 
   it('goes negative when the quote is below the average cost', () => {
-    expect(unrealizedPL(position({ quantity: 10, cost_basis: 100_000, last_price: 5_000 }))).toBe(
+    expect(unrealizedPL(position({ quantity: fromShares(10), cost_basis: 100_000, last_price: 5_000 }))).toBe(
       -50_000,
     )
   })
@@ -81,7 +83,7 @@ describe('unrealizedPL', () => {
 describe('returnPct', () => {
   it('expresses the gain as a fraction of the cost', () => {
     // 10 shares costing 100,000 now worth 120,000: a 20% gain.
-    expect(returnPct(position({ quantity: 10, cost_basis: 100_000, last_price: 12_000 }))).toBeCloseTo(
+    expect(returnPct(position({ quantity: fromShares(10), cost_basis: 100_000, last_price: 12_000 }))).toBeCloseTo(
       0.2,
     )
   })
@@ -91,7 +93,7 @@ describe('returnPct', () => {
   })
 
   it('is null rather than infinite when there is no cost to measure against', () => {
-    expect(returnPct(position({ quantity: 10, cost_basis: 0, last_price: 5_000 }))).toBeNull()
+    expect(returnPct(position({ quantity: fromShares(10), cost_basis: 0, last_price: 5_000 }))).toBeNull()
   })
 })
 
@@ -141,7 +143,7 @@ describe('summaryReturnPct', () => {
 describe('portfolioWeight', () => {
   // The question it exists for: how much of the book is in this one name.
   it('measures a holding against its own currency total', () => {
-    const p = position({ quantity: 100, last_price: 1000 })
+    const p = position({ quantity: fromShares(100), last_price: 1000 })
     const s = summary({ total_market_value: 400_000 })
     expect(portfolioWeight(p, s)).toBeCloseTo(0.25, 10)
   })
@@ -149,14 +151,14 @@ describe('portfolioWeight', () => {
   // An unknown weight is not a small one. Rendering 0% would claim the position
   // is negligible, which is the opposite of what a missing quote means.
   it('is null when the holding has no quote', () => {
-    const p = position({ quantity: 100, last_price: null })
+    const p = position({ quantity: fromShares(100), last_price: null })
     const s = summary({ total_market_value: 400_000 })
     expect(portfolioWeight(p, s)).toBeNull()
   })
 
   // Nothing priced means nothing to measure against, and no division by zero.
   it('is null when there is no priced market value', () => {
-    const p = position({ quantity: 100, last_price: 1000 })
+    const p = position({ quantity: fromShares(100), last_price: 1000 })
     const s = summary({ total_market_value: 0 })
     expect(portfolioWeight(p, s)).toBeNull()
   })

@@ -127,12 +127,16 @@ func decodeData(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 	}
 }
 
-// tradePayload builds a transaction request body.
-func tradePayload(instrumentID string, side models.TransactionSide, qty int, price int64, tradedAt time.Time) map[string]any {
+// shares converts a whole-share count to the scaled units the API speaks, so
+// these tests go on reading as share counts rather than as millionths.
+func shares(n int64) int64 { return n * models.SharesScale }
+
+// tradePayload builds a transaction request body. qty is whole shares.
+func tradePayload(instrumentID string, side models.TransactionSide, qty int64, price int64, tradedAt time.Time) map[string]any {
 	return map[string]any{
 		"instrument_id": instrumentID,
 		"side":          side,
-		"quantity":      qty,
+		"quantity":      shares(qty),
 		"price":         price,
 		"traded_at":     tradedAt.Format(time.RFC3339),
 	}

@@ -105,7 +105,7 @@ type financialsResponse []struct {
 }
 
 // buy records a purchase so the instrument becomes an open holding.
-func (e *testEnv) buy(t *testing.T, token, instrumentID string, qty int) {
+func (e *testEnv) buy(t *testing.T, token, instrumentID string, qty int64) {
 	t.Helper()
 	rec := e.do(t, http.MethodPost, "/api/v1/transactions",
 		tradePayload(instrumentID, models.SideBuy, qty, 10000, time.Now().Add(-24*time.Hour)), token)

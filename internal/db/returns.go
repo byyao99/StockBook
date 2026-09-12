@@ -163,7 +163,7 @@ func (d *DB) ReturnsReport(userID string, asOf time.Time) ([]ReturnsSummary, err
 			continue
 		}
 		a.summary.PricedPositions++
-		a.summary.EndingValue += int64(h.Quantity) * *h.LastPrice
+		a.summary.EndingValue += models.Gross(h.Quantity, *h.LastPrice)
 	}
 
 	for _, f := range flows {

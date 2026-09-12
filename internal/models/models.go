@@ -167,6 +167,26 @@ type DailyClose struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// SchemaMeta records one-off facts about the shape of the data itself, as
+// opposed to anything in the book.
+//
+// AutoMigrate can add a column but cannot rewrite what is in one, so a change
+// of *units* — share counts becoming scaled rather than whole — has to be
+// applied by a backfill, and a backfill that multiplies must run exactly once.
+// Nothing about a stored quantity says whether it has already been scaled: 100
+// is a plausible number of whole shares and a plausible 0.0001 of one. A marker
+// is the only thing that can tell them apart, which is why this table exists
+// rather than a heuristic.
+type SchemaMeta struct {
+	Key       string    `gorm:"primaryKey" json:"key"`
+	Value     string    `json:"value"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SharesScaledKey marks that stored share counts have been converted to
+// SharesScale units. Its presence is what makes the backfill idempotent.
+const SharesScaledKey = "shares_scaled"
+
 // DividendEvent is a distribution the provider says an instrument paid.
 //
 // It is **not** a ledger entry and must never become one on its own. The ledger
@@ -338,7 +358,10 @@ func (s TransactionSide) Realizes() bool {
 // and can always be rebuilt by replaying these rows in order.
 //
 // Symbol is a snapshot taken at entry time so that renaming an instrument never
-// rewrites history. Price and Fee are int64 cents; Quantity is whole shares.
+// rewrites history. Price and Fee are int64 cents; Quantity is shares in
+// SharesScale units, so 2.79 shares is stored as 2_790_000 — fractional because
+// a broker filling a fixed-amount purchase hands you a fraction of one, and
+// integer for the same reason money is.
 // NetAmount is computed by the server (never accepted from the client): the
 // cash that left the account on a buy, or arrived on a sell, fees included.
 //
@@ -359,7 +382,7 @@ type Transaction struct {
 	InstrumentID string          `gorm:"index:idx_tx_user_instrument_time,priority:2" json:"instrument_id"`
 	Symbol       string          `json:"symbol"`
 	Side         TransactionSide `json:"side"`
-	Quantity     int             `json:"quantity"`
+	Quantity     int64           `json:"quantity"`
 	Price        int64           `json:"price"`
 	Fee          int64           `json:"fee"`
 	NetAmount    int64           `json:"net_amount"`
@@ -385,7 +408,7 @@ type Position struct {
 	ID           string    `gorm:"primaryKey" json:"id"`
 	UserID       string    `gorm:"uniqueIndex:idx_position_user_instrument,priority:1" json:"user_id"`
 	InstrumentID string    `gorm:"uniqueIndex:idx_position_user_instrument,priority:2" json:"instrument_id"`
-	Quantity     int       `gorm:"not null;default:0" json:"quantity"`
+	Quantity     int64     `gorm:"not null;default:0" json:"quantity"`
 	CostBasis    int64     `gorm:"not null;default:0" json:"cost_basis"`
 	RealizedPL   int64     `gorm:"not null;default:0" json:"realized_pl"`
 	CreatedAt    time.Time `json:"created_at"`

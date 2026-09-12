@@ -34,7 +34,7 @@ type PendingDividend struct {
 	Currency     models.Currency `json:"currency"`
 	ExDate       string          `json:"ex_date"`
 	PerShare     int64           `json:"per_share"`
-	Shares       int             `json:"shares"`
+	Shares       int64           `json:"shares"`
 	Estimated    int64           `json:"estimated"`
 }
 
@@ -67,7 +67,7 @@ type dividendLedgerRow struct {
 	Name         string
 	Currency     models.Currency
 	Side         models.TransactionSide
-	Quantity     int
+	Quantity     int64
 	TradedAt     time.Time
 }
 
@@ -149,7 +149,7 @@ func (d *DB) PendingDividends(userID string) ([]PendingDividend, error) {
 			ExDate:       event.ExDate,
 			PerShare:     event.Amount,
 			Shares:       shares,
-			Estimated:    int64(shares) * event.Amount,
+			Estimated:    models.Gross(shares, event.Amount),
 		})
 	}
 
@@ -166,8 +166,8 @@ func (d *DB) PendingDividends(userID string) ([]PendingDividend, error) {
 
 // sharesOn reports how many shares the ledger leaves held at the close of date.
 // A dividend entry moves no shares, so only buys and sells count.
-func sharesOn(ledger []dividendLedgerRow, date string) int {
-	shares := 0
+func sharesOn(ledger []dividendLedgerRow, date string) int64 {
+	var shares int64
 	for _, e := range ledger {
 		if e.TradedAt.UTC().Format(time.DateOnly) > date {
 			break // the ledger is in order

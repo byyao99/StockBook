@@ -135,7 +135,7 @@ func TestEditAndDeleteRestampLedger(t *testing.T) {
 
 	// Correcting the first buy's price moves the average, and with it the sale.
 	if _, err := s.UpdateTransaction(buy.ID, user.ID, TransactionUpdate{
-		Quantity: 100, Price: 5000, TradedAt: day(1),
+		Quantity: shares(100), Price: 5000, TradedAt: day(1),
 	}); err != nil {
 		t.Fatalf("UpdateTransaction: %v", err)
 	}

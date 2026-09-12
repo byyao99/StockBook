@@ -66,7 +66,7 @@ type curveTx struct {
 	InstrumentID string
 	Currency     models.Currency
 	Side         models.TransactionSide
-	Quantity     int
+	Quantity     int64
 	Price        int64
 	Fee          int64
 	NetAmount    int64
@@ -237,7 +237,7 @@ func (d *DB) currencyCurve(currency models.Currency, ledger []curveTx, from, to 
 			if !ok {
 				continue
 			}
-			value += int64(state.Quantity) * close
+			value += models.Gross(state.Quantity, close)
 		}
 
 		switch {

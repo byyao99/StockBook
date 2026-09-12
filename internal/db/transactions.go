@@ -127,7 +127,7 @@ func (d *DB) ListTransactions(opts ListOptions, filter TransactionFilter) ([]mod
 // instrument are deliberately not editable: changing either would move the entry
 // between positions, which is clearer expressed as a delete plus a re-entry.
 type TransactionUpdate struct {
-	Quantity int
+	Quantity int64
 	Price    int64
 	Fee      int64
 	TradedAt time.Time

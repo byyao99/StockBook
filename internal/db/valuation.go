@@ -167,7 +167,7 @@ func (p pricedLedger) valueOn(date string) (int64, error) {
 		if !ok {
 			continue
 		}
-		value += int64(state.Quantity) * close
+		value += models.Gross(state.Quantity, close)
 	}
 	return value, nil
 }

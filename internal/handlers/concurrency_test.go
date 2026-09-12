@@ -109,7 +109,7 @@ func TestConcurrentBuysAccumulateExactlyOnce(t *testing.T) {
 	// However many got in, the holding must account for exactly those and no
 	// others — no lost update, no double count.
 	position := readPosition(t, e, user, "2330")
-	if want := created * 10; position.Quantity != want {
+	if want := shares(int64(created) * 10); position.Quantity != want {
 		t.Errorf("quantity = %d, want %d (from %d accepted buys)", position.Quantity, want, created)
 	}
 	if want := int64(created) * 10 * 90000; position.CostBasis != want {

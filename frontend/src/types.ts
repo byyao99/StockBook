@@ -72,6 +72,14 @@ export const SIDES: TransactionSide[] = ['buy', 'sell', 'dividend']
 
 // Transaction is one entry in the ledger. `symbol` is a snapshot taken when the
 // entry was made, so renaming an instrument never rewrites history.
+/**
+ * Share counts cross the wire as **scaled integers**, not whole shares: 2.79
+ * shares is 2_790_000. It is the same rule money follows — an integer on the
+ * wire, converted once at the UI edge — and for the same reason: a float share
+ * count drifts, and a position out by a fraction compounds through every cost
+ * basis built on it. Fractional shares are real, so the integer is scaled
+ * rather than whole. Use `shares.ts` to convert; never divide by hand.
+ */
 export interface Transaction {
   id: string
   user_id: string

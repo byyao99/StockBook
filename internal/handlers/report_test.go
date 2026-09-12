@@ -120,8 +120,8 @@ func TestDividendIsRecordedAndReportedSeparately(t *testing.T) {
 	if positions[0]["cost_basis"] != float64(70000000) {
 		t.Errorf("cost basis %v, want 70000000", positions[0]["cost_basis"])
 	}
-	if positions[0]["quantity"] != float64(1000) {
-		t.Errorf("quantity %v, want 1000", positions[0]["quantity"])
+	if positions[0]["quantity"] != float64(shares(1000)) {
+		t.Errorf("quantity %v, want %d", positions[0]["quantity"], shares(1000))
 	}
 	if positions[0]["realized_pl"] != float64(489400) {
 		t.Errorf("position realized %v, want 489400", positions[0]["realized_pl"])

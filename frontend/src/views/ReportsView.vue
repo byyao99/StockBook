@@ -10,6 +10,7 @@ import {
   formatQty,
   formatSignedCents,
 } from '../money'
+import { formatShares } from '../shares'
 import EquityCurveChart from '../components/EquityCurveChart.vue'
 import type {
   CurrencyCurve,
@@ -175,7 +176,7 @@ function sellingVerdict(gain: number): string {
 /** "3 sales · 450 shares" for the period. */
 function saleCounts(h: HindsightSummary): string {
   const sales = `${h.sells} ${h.sells === 1 ? 'sale' : 'sales'}`
-  return `${sales} · ${formatQty(h.shares_sold)} shares`
+  return `${sales} · ${formatShares(h.shares_sold)} shares`
 }
 
 /** "128 sessions · 4 holdings" for a curve. */

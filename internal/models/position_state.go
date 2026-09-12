@@ -1,6 +1,22 @@
 package models
 
-import "errors"
+import (
+	"errors"
+	"math/big"
+)
+
+// SharesScale is how many stored units make one share.
+//
+// Share counts are integers for the same reason money is: a float would
+// reintroduce the representation error the rest of this system exists to avoid,
+// and a position that drifts by 1e-15 of a share compounds through every cost
+// basis and every report built on one. Fractional shares are real — a US broker
+// filling a fixed-amount purchase hands you 2.79 of something — so the integer
+// is scaled rather than whole.
+//
+// A millionth of a share is finer than any broker reports (Schwab and IBKR give
+// four decimals, Robinhood six), so nothing is ever truncated on the way in.
+const SharesScale int64 = 1_000_000
 
 // ErrInsufficientShares is returned when a sell would take more shares than the
 // position holds. Handlers map it to HTTP 409.
@@ -12,7 +28,7 @@ var ErrInsufficientShares = errors.New("insufficient shares")
 // Quantity and CostBasis are non-negative by construction; RealizedPL is the
 // only field that can go negative.
 type PositionState struct {
-	Quantity   int
+	Quantity   int64 // shares in SharesScale units, NOT whole shares
 	CostBasis  int64 // total remaining cost in cents, NOT a per-share average
 	RealizedPL int64 // cents, may be negative
 }
@@ -46,15 +62,15 @@ func (p PositionState) Apply(t Transaction) (PositionState, error) {
 	switch t.Side {
 	case SideBuy:
 		p.Quantity += t.Quantity
-		p.CostBasis += int64(t.Quantity)*t.Price + t.Fee
+		p.CostBasis += Gross(t.Quantity, t.Price) + t.Fee
 		return p, nil
 
 	case SideSell:
 		if t.Quantity > p.Quantity {
 			return PositionState{}, ErrInsufficientShares
 		}
-		costRemoved := divRoundHalfUp(p.CostBasis*int64(t.Quantity), int64(p.Quantity))
-		proceeds := int64(t.Quantity)*t.Price - t.Fee
+		costRemoved := mulDivRoundHalfUp(p.CostBasis, t.Quantity, p.Quantity)
+		proceeds := Gross(t.Quantity, t.Price) - t.Fee
 		p.RealizedPL += proceeds - costRemoved
 		p.CostBasis -= costRemoved
 		p.Quantity -= t.Quantity
@@ -69,7 +85,7 @@ func (p PositionState) Apply(t Transaction) (PositionState, error) {
 		// the shares may have been sold, and refusing that entry would decline
 		// to record money that genuinely arrived. Nothing here runs out or goes
 		// negative, so there is no invariant needing the guard a sell requires.
-		p.RealizedPL += int64(t.Quantity)*t.Price - t.Fee
+		p.RealizedPL += Gross(t.Quantity, t.Price) - t.Fee
 		return p, nil
 
 	default:
@@ -82,27 +98,52 @@ func (p PositionState) Apply(t Transaction) (PositionState, error) {
 // fee). It is the server's own arithmetic — client-supplied amounts are never
 // trusted.
 func NetAmount(t Transaction) int64 {
-	gross := int64(t.Quantity) * t.Price
+	gross := Gross(t.Quantity, t.Price)
 	if t.Side == SideBuy {
 		return gross + t.Fee
 	}
 	return gross - t.Fee
 }
 
-// divRoundHalfUp divides a by b rounding halves away from zero, using integer
-// arithmetic only — float division would reintroduce the representation error
-// that integer cents exist to avoid. b must be positive; a is non-negative in
-// every call site (it is a cost basis times a share count).
+// Gross is what a quantity at a price comes to, in cents.
 //
-// Overflow is not a practical concern: CostBasis would have to exceed roughly
-// 9.2e18/quantity cents, i.e. tens of billions of dollars on a million-share
-// position, before int64 saturates.
-func divRoundHalfUp(a, b int64) int64 {
-	if b == 0 {
+// This is where fractional shares put a rounding step that whole ones never
+// needed: 2.79 shares at $10.01 is $27.9279, which is not a whole cent and
+// never will be. The rounding happens **once, here**, and what is stored
+// afterwards is the exact integer result — the same discipline the fee estimate
+// follows when it multiplies a rate by an amount. Rounding anywhere else, or
+// more than once, is what makes a cost basis drift.
+func Gross(quantity, price int64) int64 {
+	return mulDivRoundHalfUp(price, quantity, SharesScale)
+}
+
+// mulDivRoundHalfUp returns a*b/c, rounding halves away from zero, exactly.
+//
+// The product is computed in arbitrary precision because with scaled share
+// counts it no longer reliably fits in an int64: a cost basis in cents times a
+// quantity in millionths passes 9.2e18 at portfolio sizes that are large but
+// not absurd, and the failure mode is silent — a wrapped product yields a cost
+// basis that is simply wrong, with nothing to indicate it. The old comment here
+// said overflow was not a practical concern, which was true while quantities
+// were whole shares and stopped being true the moment they were scaled.
+//
+// This runs once per ledger entry on a replay, so the allocation is irrelevant
+// beside being unconditionally right. Only the division rounds; the
+// multiplication is exact.
+func mulDivRoundHalfUp(a, b, c int64) int64 {
+	if c == 0 {
 		return 0
 	}
-	if a >= 0 {
-		return (a + b/2) / b
+	product := new(big.Int).Mul(big.NewInt(a), big.NewInt(b))
+	divisor := big.NewInt(c)
+
+	// Round half away from zero: add half the divisor, with the sign of the
+	// product, before truncating toward zero.
+	half := new(big.Int).Rsh(new(big.Int).Abs(divisor), 1)
+	if product.Sign() < 0 {
+		half.Neg(half)
 	}
-	return -((-a + b/2) / b)
+	product.Add(product, half)
+
+	return new(big.Int).Quo(product, divisor).Int64()
 }

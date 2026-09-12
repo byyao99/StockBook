@@ -48,7 +48,7 @@ func TestHindsightPricesASaleMadeTooEarly(t *testing.T) {
 		t.Errorf("selling gain %d, want -800000: the sale banked a profit and "+
 			"still left 800000 on the table", summary.SellingGain)
 	}
-	if summary.SharesSold != 100 || summary.Sells != 1 {
+	if summary.SharesSold != shares(100) || summary.Sells != 1 {
 		t.Errorf("unexpected counts: %+v", summary)
 	}
 }
@@ -197,7 +197,7 @@ func TestHindsightShowsWhatIsStillHeld(t *testing.T) {
 
 	summary := onlyHindsight(t, mustHindsight(t, s, user.ID))
 	row := summary.Instruments[0]
-	if row.SharesSold != 100 || row.SharesHeld != 100 {
+	if row.SharesSold != shares(100) || row.SharesHeld != shares(100) {
 		t.Errorf("sold %d and holds %d, want 100 and 100 — the re-entry has to "+
 			"be visible next to the loss this row reports", row.SharesSold, row.SharesHeld)
 	}

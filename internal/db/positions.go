@@ -24,7 +24,7 @@ type PositionView struct {
 	Name           string          `json:"name"`
 	Market         string          `json:"market"`
 	Currency       models.Currency `json:"currency"`
-	Quantity       int             `json:"quantity"`
+	Quantity       int64           `json:"quantity"`
 	CostBasis      int64           `json:"cost_basis"`
 	RealizedPL     int64           `json:"realized_pl"`
 	LastPrice      *int64          `json:"last_price"`
@@ -84,7 +84,7 @@ type positionRow struct {
 	Name           string
 	Market         string
 	Currency       models.Currency
-	Quantity       int
+	Quantity       int64
 	CostBasis      int64
 	RealizedPL     int64
 	LastPrice      *int64
@@ -150,7 +150,7 @@ func (r positionRow) toView() PositionView {
 		UpdatedAt:      r.UpdatedAt,
 	}
 	if r.LastPrice != nil {
-		marketValue := int64(r.Quantity) * *r.LastPrice
+		marketValue := models.Gross(r.Quantity, *r.LastPrice)
 		unrealized := marketValue - r.CostBasis
 		v.MarketValue = &marketValue
 		v.UnrealizedPL = &unrealized
@@ -218,7 +218,7 @@ func (d *DB) PortfolioSummary(userID string) ([]CurrencySummary, error) {
 		if r.LastPrice != nil {
 			s.PricedPositions++
 			s.PricedCostBasis += r.CostBasis
-			s.TotalMarketValue += int64(r.Quantity) * *r.LastPrice
+			s.TotalMarketValue += models.Gross(r.Quantity, *r.LastPrice)
 		}
 	}
 
