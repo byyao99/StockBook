@@ -116,6 +116,13 @@ async function chooseCandidate(candidate: InstrumentCandidate) {
   }
 }
 
+/**
+ * Puts the search away. With something already chosen this collapses back to
+ * it, which is what makes the "change" link reversible: it opens the search to
+ * pick a different instrument, and Escape means the reader changed their mind
+ * about changing their mind. Without a selection there is nothing to collapse
+ * to and the field simply empties.
+ */
 function close() {
   open.value = false
   query.value = ''
@@ -146,6 +153,7 @@ function clear() {
         :disabled="disabled"
         placeholder="Search a stock number or name — e.g. 2330, TSLA"
         @focus="open = true"
+        @keydown.esc="close"
       />
 
       <ul v-if="open" class="results">

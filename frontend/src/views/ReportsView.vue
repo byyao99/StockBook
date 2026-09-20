@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { instrumentApi, reportApi } from '../api/client'
+import { instrumentApi, reportApi, settingsApi } from '../api/client'
 import {
   UNKNOWN,
   formatBpsMagnitudeOrUnknown,
@@ -12,8 +12,12 @@ import {
 } from '../money'
 import { formatShares } from '../shares'
 import EquityCurveChart from '../components/EquityCurveChart.vue'
+import InstrumentPicker from '../components/InstrumentPicker.vue'
 import type {
+  Benchmark,
+  Currency,
   CurrencyCurve,
+  Instrument,
   HindsightSummary,
   RealizedSummary,
   ReturnsSummary,
@@ -40,6 +44,16 @@ const curves = ref<CurrencyCurve[]>([])
 // opens with the position the period was entered holding, so "how did 2025 go?"
 // is answerable without the answer being dragged around by every year before it.
 const periodReturns = ref<ReturnsSummary[]>([])
+// What each currency's book is measured against, chosen here rather than on
+// /account for the reason the Sync prices button is here too: this is where an
+// absent comparison is noticed. The whole set is held rather than the one being
+// edited, because saving sends every currency and one left out is cleared —
+// setting USD from here must not silently wipe TWD.
+const benchmarks = ref<Record<string, string>>({})
+// Instruments already on file, for the picker's fast path.
+const instruments = ref<Instrument[]>([])
+const benchmarkSaving = ref('')
+
 const loading = ref(false)
 const error = ref('')
 const success = ref('')
@@ -101,6 +115,56 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * Chooses what a currency's book is measured against, and redraws.
+ *
+ * It saves on pick rather than behind a Save button: the result is the line
+ * that appears on the chart a moment later, so a confirmation step would only
+ * stand between the choice and its own answer.
+ *
+ * An empty id is ignored, and that is the whole reason this guard exists. The
+ * picker's own "change" link clears its value to reopen the search — it means
+ * "let me pick a different one", not "stop comparing" — and saving that would
+ * drop the benchmark and redraw the chart without its line the moment somebody
+ * went looking for a different one. Removing is what the button is for.
+ */
+async function setBenchmark(currency: Currency, instrumentId: string) {
+  if (!instrumentId) return
+  await saveBenchmark(currency, instrumentId)
+}
+
+/** Stops measuring a currency against anything. */
+async function stopComparing(currency: Currency) {
+  await saveBenchmark(currency, '')
+}
+
+async function saveBenchmark(currency: Currency, instrumentId: string) {
+  benchmarkSaving.value = currency
+  error.value = ''
+  try {
+    benchmarks.value = { ...benchmarks.value, [currency]: instrumentId }
+    await settingsApi.saveBenchmarks(
+      Object.entries(benchmarks.value)
+        .filter(([, id]) => id)
+        .map(([c, id]) => ({ currency: c as Currency, instrument_id: id })),
+    )
+    await load()
+  } catch (e) {
+    error.value = (e as Error).message
+    await loadBenchmarks()
+  } finally {
+    benchmarkSaving.value = ''
+  }
+}
+
+async function loadBenchmarks() {
+  const [saved, onFile] = await Promise.all([settingsApi.benchmarks(), instrumentApi.list(100, 0)])
+  const next: Record<string, string> = {}
+  for (const b of saved as Benchmark[]) next[b.currency] = b.instrument_id
+  benchmarks.value = next
+  instruments.value = onFile.items
 }
 
 /**
@@ -198,7 +262,14 @@ function curveCounts(c: CurrencyCurve): string {
 }
 
 // The year in progress is the one a user opens this page to look at.
-onMounted(() => selectYear(thisYear))
+onMounted(async () => {
+  selectYear(thisYear)
+  try {
+    await loadBenchmarks()
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+})
 </script>
 
 <template>
@@ -270,6 +341,32 @@ onMounted(() => selectYear(thisYear))
           {{ c.currency }}
           <span class="muted">· {{ periodLabel }} · {{ curveCounts(c) }}</span>
         </h3>
+
+        <!-- The benchmark is chosen per currency, and on this page the currency
+             is whichever block the control sits in — so unlike a settings page
+             it never asks about a currency the reader does not hold. -->
+        <div class="benchmark-row">
+          <span class="benchmark-label">Compared against</span>
+          <div class="benchmark-picker">
+            <InstrumentPicker
+              :model-value="benchmarks[c.currency] ?? ''"
+              :instruments="instruments"
+              :disabled="benchmarkSaving === c.currency"
+              @update:model-value="setBenchmark(c.currency, $event)"
+              @created="loadBenchmarks"
+              @error="error = $event"
+            />
+          </div>
+          <button
+            v-if="benchmarks[c.currency]"
+            class="btn-secondary benchmark-clear"
+            type="button"
+            :disabled="benchmarkSaving === c.currency"
+            @click="stopComparing(c.currency)"
+          >
+            Stop comparing
+          </button>
+        </div>
 
         <!-- An empty curve explains itself in the server's own words. Drawing a
              flat line at zero instead would read as a book that went nowhere. -->
@@ -627,6 +724,32 @@ onMounted(() => selectYear(thisYear))
 }
 .currency-block {
   margin-bottom: 24px;
+}
+/* Sits above the chart it changes, so the picture is the confirmation. The
+   picker collapses to the chosen instrument once there is one, which is why
+   this reads as a sentence rather than a form row. */
+.benchmark-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  flex-wrap: wrap;
+}
+.benchmark-label {
+  font-size: 13px;
+  color: #6b7280;
+}
+/* Wide enough to search in, but not so wide it reads as the page's main
+   control — the chart below it is. */
+.benchmark-picker {
+  flex: 1 1 260px;
+  max-width: 420px;
+}
+.benchmark-clear {
+  width: auto;
+  white-space: nowrap;
+  padding: 4px 10px;
+  font-size: 13px;
 }
 /* Three sections share this page, so each says which one it is. */
 .report-title {

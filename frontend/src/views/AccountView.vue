@@ -15,60 +15,7 @@ import {
   toCents,
   listPercentToBps,
 } from '../money'
-import type {
-  Benchmark,
-  Currency,
-  FeeProfile,
-  FeeProfileKey,
-  Instrument,
-  RecurringPlan,
-} from '../types'
-import InstrumentPicker from '../components/InstrumentPicker.vue'
-
-// The currencies a book can be kept in. A benchmark is chosen per currency
-// because comparing a TWD book against a USD index would report the exchange
-// rate as performance — the same reason no total in this system is ever summed
-// across currencies.
-const BENCHMARK_CURRENCIES: Currency[] = ['TWD', 'USD']
-
-// The benchmark a book is measured against, one per currency. Unlike the fee
-// profiles below there is no default underneath: an instrument exists in this
-// system only once a provider has priced it, so there is nothing to fall back
-// to and a book stays unmeasured until its owner picks something.
-const benchmarkChoice = ref<Record<string, string>>({})
-const benchmarkError = ref('')
-const benchmarkSuccess = ref('')
-const benchmarkSaving = ref(false)
-
-async function loadBenchmarks() {
-  const saved = await settingsApi.benchmarks()
-  const next: Record<string, string> = {}
-  for (const currency of BENCHMARK_CURRENCIES) next[currency] = ''
-  for (const b of saved as Benchmark[]) next[b.currency] = b.instrument_id
-  benchmarkChoice.value = next
-}
-
-async function saveBenchmarks() {
-  benchmarkError.value = ''
-  benchmarkSuccess.value = ''
-  benchmarkSaving.value = true
-  try {
-    // Only the currencies actually chosen are sent; one left out is cleared,
-    // which is how a benchmark is removed.
-    await settingsApi.saveBenchmarks(
-      BENCHMARK_CURRENCIES.filter((c) => benchmarkChoice.value[c]).map((c) => ({
-        currency: c,
-        instrument_id: benchmarkChoice.value[c],
-      })),
-    )
-    benchmarkSuccess.value = 'Benchmarks saved. The comparison is on the Reports chart.'
-    await loadBenchmarks()
-  } catch (e) {
-    benchmarkError.value = (e as Error).message
-  } finally {
-    benchmarkSaving.value = false
-  }
-}
+import type { FeeProfile, FeeProfileKey, Instrument, RecurringPlan } from '../types'
 
 // Savings plans live here rather than on the ledger because they are standing
 // configuration, like the fee terms below — what is *supposed* to happen. The
@@ -305,11 +252,6 @@ onMounted(async () => {
   } catch (e) {
     planError.value = (e as Error).message
   }
-  try {
-    await loadBenchmarks()
-  } catch (e) {
-    benchmarkError.value = (e as Error).message
-  }
 })
 </script>
 
@@ -358,46 +300,6 @@ onMounted(async () => {
       </form>
       <p class="hint muted">
         Use at least two of: lowercase letter, uppercase letter, digit.
-      </p>
-    </section>
-
-    <section class="card wide-card">
-      <h2 class="section-title">Benchmark</h2>
-      <p class="muted intro">
-        What to measure this book against — usually a broad index fund. The Reports
-        chart then draws the same money, arriving on the same days, in this instead,
-        which is the only thing here that answers whether picking stocks was worth
-        the trouble.
-      </p>
-
-      <p v-if="benchmarkError" class="error">{{ benchmarkError }}</p>
-      <p v-if="benchmarkSuccess" class="success">{{ benchmarkSuccess }}</p>
-
-      <div v-for="currency in BENCHMARK_CURRENCIES" :key="currency" class="field bench-row">
-        <label>{{ currency }} book</label>
-        <InstrumentPicker
-          v-model="benchmarkChoice[currency]"
-          :instruments="planInstruments"
-          @created="loadPlans"
-          @error="benchmarkError = $event"
-        />
-        <button
-          v-if="benchmarkChoice[currency]"
-          class="btn-secondary bench-clear"
-          type="button"
-          @click="benchmarkChoice[currency] = ''"
-        >
-          Measure against nothing
-        </button>
-      </div>
-
-      <button class="btn-primary" :disabled="benchmarkSaving" @click="saveBenchmarks">
-        {{ benchmarkSaving ? 'Saving…' : 'Save Benchmark' }}
-      </button>
-      <p class="hint muted">
-        It must be quoted in the currency it measures, and its stored prices have to
-        reach back to this book's first trade — press Sync prices on Reports after
-        choosing one, or the chart will say it cannot compare.
       </p>
     </section>
 
@@ -705,21 +607,7 @@ td select {
 .plan-form .field {
   margin-bottom: 0;
 }
-/* The picker is the wide thing in the row and the clear button trails it, so
-   the label sits above both rather than beside either. */
-.bench-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  align-items: start;
-}
-.bench-row label {
-  grid-column: 1 / -1;
-}
-.bench-clear {
-  width: auto;
-  white-space: nowrap;
-}
+
 .plan-form button {
   width: 100%;
 }
