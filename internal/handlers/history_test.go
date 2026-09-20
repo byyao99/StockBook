@@ -119,6 +119,78 @@ func TestSyncHistorySkipsUntradedInstruments(t *testing.T) {
 	}
 }
 
+// The bug a benchmark makes easy to hit: an instrument already holding history
+// that starts *after* what now needs valuing. The incremental top-up reaches
+// back from the last stored session, so on its own it extends a series forward
+// and never fills a gap at the front — pressing Sync did nothing at all while
+// the chart went on saying the prices were missing.
+//
+// The gap has to be wider than historyOverlap for this to bite, which is the
+// whole point: a few days at the front are swept up by the overlap already, and
+// the case that matters is the six weeks between a book opening and the
+// benchmark being bought.
+func TestSyncHistoryRefetchesASeriesThatStartsTooLate(t *testing.T) {
+	fetcher := &stubFetcher{
+		permissive: true,
+		history: map[string]quotes.History{
+			"2330.TW": series("2025-07-01", 100000, 101050, 99500),
+			"2317.TW": series("2025-08-15", 99000, 98000),
+		},
+	}
+	e := setupWithFetcher(t, fetcher)
+	token := e.token(t, "syncer", models.RoleUser)
+	early := e.seedInstrument(t, "2330", nil)
+	late := e.seedInstrument(t, "2317", nil)
+
+	// The book opens in 2330 on 1 July and only buys 2317 six weeks later, so
+	// 2317's own history begins long after the book's first session.
+	for _, tx := range []struct {
+		id string
+		on time.Time
+	}{
+		{early.ID, tradedOn(2025, time.July, 1)},
+		{late.ID, tradedOn(2025, time.August, 15)},
+	} {
+		buy := tradePayload(tx.id, models.SideBuy, 100, 100000, tx.on)
+		if rec := e.do(t, http.MethodPost, "/api/v1/transactions", buy, token); rec.Code != http.StatusCreated {
+			t.Fatalf("buy: got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+	}
+	if rec := e.do(t, http.MethodPost, "/api/v1/instruments/sync-history", nil, token); rec.Code != http.StatusOK {
+		t.Fatalf("first sync: got %d", rec.Code)
+	}
+
+	// Now 2317 becomes the benchmark, which needs its prices back to the book's
+	// first trade — six weeks before 2317 was ever bought.
+	bench := map[string]any{
+		"benchmarks": []map[string]any{{"currency": "TWD", "instrument_id": late.ID}},
+	}
+	if rec := e.do(t, http.MethodPut, "/api/v1/settings/benchmarks", bench, token); rec.Code != http.StatusOK {
+		t.Fatalf("set benchmark: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	rec := e.do(t, http.MethodPost, "/api/v1/instruments/sync-history", nil, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second sync: got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	report := decodeSync(t, rec.Body.Bytes())
+
+	found := false
+	for _, r := range report.Results {
+		if r.Symbol != "2317" {
+			continue
+		}
+		found = true
+		if r.From != "2025-07-01" {
+			t.Errorf("refetched from %q, want the book's first trade 2025-07-01 — topping up "+
+				"the end never fills a gap at the front", r.From)
+		}
+	}
+	if !found {
+		t.Fatalf("the benchmark was not synced at all: %+v", report.Results)
+	}
+}
+
 // A savings plan is the other thing that needs history, and the ordinary way to
 // start one is before the first purchase — so an instrument with a plan and no
 // trades at all must still be fetched, from the plan's start date. Skipping it

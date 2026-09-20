@@ -233,6 +233,17 @@ func (h *InstrumentHandler) syncOne(ctx context.Context, item models.Instrument)
 // the provider revises a close now and then, so the last few days are refetched
 // and overwritten rather than trusted — which costs nothing, because the write
 // is an upsert keyed on the session.
+//
+// **A series that already starts too late is refetched whole**, and that case
+// is not a refinement. The top-up reaches back from the *last* stored session,
+// so on its own it can only ever extend a series forward — it will never fill a
+// gap at the front, and pressing Sync would do nothing at all while the report
+// kept saying prices were missing. That was harmless while the needed start
+// date could only be an instrument's own first trade, which never moves
+// earlier. It stopped being harmless the moment anything else could move it:
+// a benchmark reaches back to the first trade of the book it measures, usually
+// long before the benchmark itself was ever bought, and a back-dated trade does
+// the same to an ordinary holding.
 func (h *InstrumentHandler) syncFrom(instrumentID, needsFrom string) (time.Time, error) {
 	first, err := time.Parse(time.DateOnly, needsFrom)
 	if err != nil {
@@ -244,6 +255,13 @@ func (h *InstrumentHandler) syncFrom(instrumentID, needsFrom string) (time.Time,
 		return time.Time{}, err
 	}
 	if latest == "" {
+		return first, nil
+	}
+	earliest, err := h.db.EarliestStoredClose(instrumentID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if earliest > needsFrom {
 		return first, nil
 	}
 	stored, err := time.Parse(time.DateOnly, latest)

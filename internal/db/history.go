@@ -76,6 +76,26 @@ func (d *DB) EarliestTradedAt(instrumentID string) (string, error) {
 	return first.TradedAt.UTC().Format(time.DateOnly), nil
 }
 
+// EarliestStoredClose returns the oldest day held for an instrument, or "" when
+// none is.
+//
+// It exists because a sync's incremental top-up is not enough on its own: it
+// answers how far *forward* the history has to reach, and this answers whether
+// it already reaches far enough *back*. The needed start date is not fixed — a
+// benchmark moves it to the measured book's first trade, and a back-dated trade
+// moves it earlier still — so a series that stops short at the front has to be
+// refetched whole rather than topped up at the end.
+func (d *DB) EarliestStoredClose(instrumentID string) (string, error) {
+	var date *string
+	err := d.db.Model(&models.DailyClose{}).
+		Where("instrument_id = ?", instrumentID).
+		Select("MIN(date)").Scan(&date).Error
+	if err != nil || date == nil {
+		return "", err
+	}
+	return *date, nil
+}
+
 // EarliestPlanStart returns the start date of the earliest savings plan buying
 // an instrument, across every user, or "" when no plan names it.
 //
