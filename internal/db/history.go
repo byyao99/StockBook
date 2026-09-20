@@ -96,18 +96,24 @@ func (d *DB) EarliestPlanStart(instrumentID string) (string, error) {
 // EarliestHistoryNeeded returns the first day an instrument's closes are worth
 // having, or "" when nothing needs them.
 //
-// The first trade is the obvious answer and was the only one until savings
-// plans existed. A plan breaks it: it comes due on dates of its own, and the
-// prompt for an instalment estimates the shares it bought from that day's
-// close — so an instrument with a plan and **no trades at all** needs history,
-// from the plan's start date, which the first-trade rule would have declined to
-// fetch. That was the whole of the bug: a plan set up before its first purchase
-// could never offer an estimate, because the prices it needed were never
-// downloaded.
+// Three separate things want history, and the earliest of them wins:
 //
-// Both answers span every user's book, exactly as EarliestTradedAt does and for
-// the same reason: instruments are shared master data, and what comes back is
-// public market data either way.
+//   - a **trade**, which is the obvious answer and was the only one for a long
+//     time: prices before an instrument was first bought value nothing;
+//   - a **savings plan**, which comes due on dates of its own and whose prompt
+//     estimates the shares an instalment bought from that day's close. The
+//     ordinary way to start a plan is before the first purchase, so the
+//     instrument has no trades at all and the first-trade rule declined to fetch
+//     it — leaving every prompt it raised with no price to estimate from,
+//     permanently;
+//   - a **benchmark**, which is compared session by session against the book it
+//     measures and so needs prices reaching back to that book's own first trade,
+//     not to the day it was chosen. An instrument nobody trades is the normal
+//     case for one: the whole point is to hold something else instead.
+//
+// All three answers span every user's book, exactly as EarliestTradedAt does and
+// for the same reason: instruments are shared master data, and what comes back
+// is public market data either way.
 func (d *DB) EarliestHistoryNeeded(instrumentID string) (string, error) {
 	traded, err := d.EarliestTradedAt(instrumentID)
 	if err != nil {
@@ -117,16 +123,27 @@ func (d *DB) EarliestHistoryNeeded(instrumentID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	switch {
-	case traded == "":
-		return planned, nil
-	case planned == "":
-		return traded, nil
-	case planned < traded:
-		return planned, nil
-	default:
-		return traded, nil
+	benchmarked, err := d.EarliestBenchmarkNeed(instrumentID)
+	if err != nil {
+		return "", err
 	}
+	return earliestDate(traded, planned, benchmarked), nil
+}
+
+// earliestDate returns the smallest non-empty YYYY-MM-DD among its arguments,
+// or "" when they are all empty. Dates in this form sort lexicographically into
+// chronological order, so a string compare is the whole comparison.
+func earliestDate(dates ...string) string {
+	out := ""
+	for _, date := range dates {
+		if date == "" {
+			continue
+		}
+		if out == "" || date < out {
+			out = date
+		}
+	}
+	return out
 }
 
 // DailyCloseSeries returns one instrument's closes between from and to

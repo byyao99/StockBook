@@ -73,8 +73,8 @@ func passwordClassCount(pw string) int {
 }
 
 // respondDBError maps a db-layer error to an appropriate HTTP response:
-// ErrNotFound → 404; ErrInsufficientShares, ErrConflict, ErrSymbolTaken and
-// ErrInstrumentInUse → 409; anything else → 500. The underlying error is logged
+// ErrNotFound → 404; ErrInsufficientShares, ErrConflict, ErrSymbolTaken,
+// ErrInstrumentInUse, ErrCurrencyLocked and ErrBenchmarkCurrency → 409; anything else → 500. The underlying error is logged
 // on the 500 path but never returned to clients.
 func respondDBError(c *gin.Context, err error) {
 	if errors.Is(err, db.ErrNotFound) {
@@ -101,6 +101,10 @@ func respondDBError(c *gin.Context, err error) {
 			"error": "this instrument already has trades, so its currency cannot be changed; " +
 				"every price recorded against it is denominated in the current one",
 		})
+		return
+	}
+	if errors.Is(err, db.ErrBenchmarkCurrency) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
 	if errors.Is(err, db.ErrConflict) {

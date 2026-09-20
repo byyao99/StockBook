@@ -33,6 +33,8 @@ function point(overrides: Partial<CurvePoint> = {}): CurvePoint {
     market_value: 1_000_000,
     net_invested: 1_000_000,
     index: INDEX_BASE,
+    benchmark_index: INDEX_BASE,
+    benchmark_value: 1_000_000,
     ...overrides,
   }
 }
@@ -203,6 +205,48 @@ describe('seriesOf', () => {
 
   it('plots the index alone on the performance mode', () => {
     expect(seriesOf([point()], 'performance').map((l) => l.key)).toEqual(['index'])
+  })
+
+  // The line is drawn only when a benchmark actually ran. The points carry 0
+  // when none did, and a flat line along the bottom of the chart would read as
+  // a benchmark that lost everything — the same mistake as rendering an
+  // unpriced holding at $0.00.
+  it('leaves the benchmark off entirely when there is none', () => {
+    expect(seriesOf([point()], 'value', null).map((l) => l.key)).toEqual([
+      'market_value',
+      'net_invested',
+    ])
+    expect(seriesOf([point()], 'performance', null).map((l) => l.key)).toEqual(['index'])
+  })
+
+  it('adds the benchmark to whichever mode is showing', () => {
+    expect(seriesOf([point()], 'value', '0050').map((l) => l.key)).toEqual([
+      'market_value',
+      'net_invested',
+      'benchmark_value',
+    ])
+    expect(seriesOf([point()], 'performance', '0050').map((l) => l.key)).toEqual([
+      'index',
+      'benchmark_index',
+    ])
+  })
+
+  it('names the benchmark in the legend, since one index looks like another', () => {
+    const [, bench] = seriesOf([point()], 'performance', 'VOO')
+    expect(bench.label).toBe('VOO')
+    const value = seriesOf([point()], 'value', 'VOO')
+    expect(value[2].label).toBe('In VOO')
+  })
+
+  // Both sides of the comparison must be measured on one axis, or the picture
+  // decides the answer rather than the numbers.
+  it('scales the benchmark on the same extent as the book', () => {
+    const points = [
+      point({ market_value: 1_000_000, benchmark_value: 1_000_000 }),
+      point({ market_value: 1_100_000, benchmark_value: 2_000_000 }),
+    ]
+    const chart = buildCurveChart(points, 'value', geometry, '0050')
+    expect(chart.extent.max).toBeGreaterThanOrEqual(2_000_000)
   })
 })
 

@@ -4,6 +4,8 @@ import { clearSession, getToken } from '../session'
 import type {
   AuthResponse,
   AuthUser,
+  Benchmark,
+  Currency,
   CurrencyCurve,
   CurrencySummary,
   FeeProfile,
@@ -266,6 +268,25 @@ export const settingsApi = {
       method: 'PUT',
       body: JSON.stringify({ profiles }),
     }),
+
+  // What each currency's book is measured against. Only what was actually
+  // chosen comes back — unlike the fee profiles there is no default underneath,
+  // because a default would have to name an instrument that may not exist.
+  benchmarks: () => request<Benchmark[]>('/settings/benchmarks'),
+
+  // Saves the FULL set: a currency left out of the payload is cleared, which is
+  // how a benchmark is removed. Unlike saveFeeProfiles this is not a patch.
+  saveBenchmarks: (benchmarks: BenchmarkInput[]) =>
+    request<Benchmark[]>('/settings/benchmarks', {
+      method: 'PUT',
+      body: JSON.stringify({ benchmarks }),
+    }),
+}
+
+/** One currency's benchmark choice on the way to the server. */
+export interface BenchmarkInput {
+  currency: Currency
+  instrument_id: string
 }
 
 /**

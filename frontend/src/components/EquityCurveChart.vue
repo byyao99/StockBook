@@ -35,7 +35,20 @@ const hovered = ref<number | null>(null)
 
 const points = computed(() => props.curve.points)
 
-const chart = computed(() => buildCurveChart(points.value, mode.value, GEOMETRY))
+/**
+ * The benchmark's symbol, or null when there is nothing to compare against —
+ * either because none was chosen or because its prices do not reach back far
+ * enough. Passing null keeps the line off the chart entirely: the points carry
+ * 0 in that case, and a flat line along the bottom would read as a benchmark
+ * that lost everything.
+ */
+const benchmark = computed(() =>
+  props.curve.benchmark && !props.curve.benchmark_unavailable
+    ? props.curve.benchmark.symbol
+    : null,
+)
+
+const chart = computed(() => buildCurveChart(points.value, mode.value, GEOMETRY, benchmark.value))
 
 /** The session the readout describes: the hovered one, else the latest. */
 const readout = computed<CurvePoint | null>(() => {
@@ -126,12 +139,21 @@ function plClass(value: number): string {
           <span class="readout-item" :class="plClass(gainAt(readout))">
             {{ formatSignedCents(gainAt(readout), currency) }}
           </span>
+          <span v-if="benchmark" class="readout-item">
+            <i class="swatch swatch-benchmark" />
+            {{ formatCents(readout.benchmark_value, currency) }} in {{ benchmark }}
+          </span>
         </template>
         <template v-else>
           <span class="readout-item">
             <i class="swatch swatch-value" />
             {{ formatIndex(readout.index) }}
             <span class="muted">from 100.0</span>
+          </span>
+          <span v-if="benchmark" class="readout-item">
+            <i class="swatch swatch-benchmark" />
+            {{ formatIndex(readout.benchmark_index) }}
+            <span class="muted">{{ benchmark }}</span>
           </span>
         </template>
       </div>
@@ -194,11 +216,27 @@ function plClass(value: number): string {
     <p v-if="mode === 'value'" class="muted caption">
       Market value against the money actually paid in. The gap between them is the gain — which is
       why they share one scale.
+      <template v-if="benchmark">
+        The third line is the same money, arriving on the same days, in {{ benchmark }} instead —
+        starting level with this book on the first session drawn.
+      </template>
     </p>
     <p v-else class="muted caption">
       A notional 100 chained from the daily returns, with contributions divided out. Adding to a
       holding moves this line only by how the new shares then perform, so saving harder cannot look
       like skill.
+      <template v-if="benchmark">
+        {{ benchmark }} is measured the same way, and counts the distributions it paid — comparing
+        against its bare price would dock it every dividend while crediting this book with its own.
+      </template>
+    </p>
+    <p v-if="curve.benchmark_unavailable" class="muted caption note">
+      No comparison: {{ curve.benchmark_unavailable }}.
+    </p>
+    <p v-else-if="curve.benchmark_exhausted" class="muted caption note">
+      The withdrawals from this book would have emptied {{ benchmark }} before the period ended, so
+      the two stopped running the same money. The performance comparison still holds; the value one
+      does not.
     </p>
   </div>
 </template>
@@ -270,6 +308,9 @@ function plClass(value: number): string {
 .swatch-invested {
   background: #94a3b8;
 }
+.swatch-benchmark {
+  background: #b45309;
+}
 .plot {
   width: 100%;
   height: auto;
@@ -310,6 +351,14 @@ function plClass(value: number): string {
   stroke-width: 1.5;
   stroke-dasharray: 5 4;
 }
+/* The benchmark is a result, like the book's own line, so it is solid and full
+   weight rather than quiet. Amber against the teal because the two are meant to
+   be told apart at a glance — and deliberately not red or green, which mean
+   loss and gain everywhere else here. */
+.line.benchmark_value,
+.line.benchmark_index {
+  stroke: #b45309;
+}
 .crosshair line {
   stroke: #94a3b8;
   stroke-width: 1;
@@ -326,10 +375,18 @@ function plClass(value: number): string {
 .crosshair circle.net_invested {
   fill: #94a3b8;
 }
+.crosshair circle.benchmark_value,
+.crosshair circle.benchmark_index {
+  fill: #b45309;
+}
 .caption {
   font-size: 12px;
   line-height: 1.5;
   margin: 6px 0 0;
   max-width: 78ch;
+}
+/* A missing comparison is something to act on, not a footnote about the axes. */
+.caption.note {
+  color: #92400e;
 }
 </style>

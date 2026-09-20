@@ -113,6 +113,7 @@ func Open(dsn string) (*DB, error) {
 		&models.FinancialFact{},
 		&models.SchemaMeta{},
 		&models.RecurringPlan{},
+		&models.Benchmark{},
 	); err != nil {
 		return nil, err
 	}

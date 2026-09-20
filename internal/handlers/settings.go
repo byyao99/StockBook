@@ -178,3 +178,80 @@ func validateFeeProfile(ratePpm, minFee, sellTaxPpm, discountBps int64) error {
 	}
 	return nil
 }
+
+// saveBenchmarkRequest is the payload for PUT /settings/benchmarks.
+//
+// A caller sends the full set, and a currency left out is cleared — the same
+// shape as choosing "none" in the form, and the only way to stop measuring
+// against something.
+type saveBenchmarkRequest struct {
+	Benchmarks []benchmarkChoice `json:"benchmarks" binding:"required,dive"`
+}
+
+type benchmarkChoice struct {
+	Currency     models.Currency `json:"currency" binding:"required"`
+	InstrumentID string          `json:"instrument_id" binding:"required"`
+}
+
+// Benchmarks handles GET /api/v1/settings/benchmarks.
+//
+// It returns only what the user has chosen, with no defaults laid underneath —
+// the one settings endpoint here that does not merge. models.Benchmark says
+// why: a default would have to name an instrument that may not exist.
+func (h *SettingsHandler) Benchmarks(c *gin.Context) {
+	saved, err := h.db.Benchmarks(callerID(c))
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": saved})
+}
+
+// SaveBenchmarks handles PUT /api/v1/settings/benchmarks.
+func (h *SettingsHandler) SaveBenchmarks(c *gin.Context) {
+	var req saveBenchmarkRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	chosen := make(map[models.Currency]string, len(req.Benchmarks))
+	for _, b := range req.Benchmarks {
+		currency, ok := models.CanonicalCurrency(string(b.Currency))
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported currency: " + string(b.Currency)})
+			return
+		}
+		if _, dup := chosen[currency]; dup {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "duplicate benchmark for " + string(currency)})
+			return
+		}
+		chosen[currency] = b.InstrumentID
+	}
+
+	userID := callerID(c)
+	// Every supported currency is visited, so one left out of the payload is
+	// cleared rather than silently kept. A settings page that cannot unset
+	// something can only ever accumulate.
+	for _, currency := range models.Currencies {
+		instrumentID, ok := chosen[currency]
+		if !ok {
+			if err := h.db.DeleteBenchmark(userID, currency); err != nil {
+				respondDBError(c, err)
+				return
+			}
+			continue
+		}
+		if err := h.db.SaveBenchmark(userID, currency, instrumentID); err != nil {
+			respondDBError(c, err)
+			return
+		}
+	}
+
+	saved, err := h.db.Benchmarks(userID)
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": saved})
+}

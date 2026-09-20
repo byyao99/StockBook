@@ -26,6 +26,18 @@ type CurvePoint struct {
 	MarketValue int64  `json:"market_value"`
 	NetInvested int64  `json:"net_invested"`
 	Index       int64  `json:"index"`
+	// BenchmarkIndex and BenchmarkValue are the same two figures for the
+	// benchmark: what a notional 100 in it would have grown to, and what this
+	// book's own money would be worth had it gone there instead.
+	//
+	// They are plain zeros rather than pointers when there is no benchmark,
+	// which is the one place this system does not distinguish unknown from
+	// zero in a field. The gate is CurrencyCurve.Benchmark being nil, which a
+	// reader has to consult anyway to know what it is being compared against —
+	// and two pointers per session across a decade of them is a lot of
+	// allocation to re-state something the envelope already says.
+	BenchmarkIndex int64 `json:"benchmark_index"`
+	BenchmarkValue int64 `json:"benchmark_value"`
 }
 
 // CurrencyCurve is one currency's daily history, with the figures derived from
@@ -55,6 +67,28 @@ type CurrencyCurve struct {
 	MaxDrawdownBps *int64          `json:"max_drawdown_bps"`
 	Instruments    int             `json:"instruments"`
 	WithoutHistory int             `json:"without_history"`
+	// Benchmark is what this currency's book is measured against, or nil when
+	// the user has chosen nothing. Its figures answer the one question no other
+	// report here can: whether any of this beat buying the index instead.
+	Benchmark              *BenchmarkView `json:"benchmark,omitempty"`
+	BenchmarkTWRBps        *int64         `json:"benchmark_twr_bps"`
+	BenchmarkAnnualizedBps *int64         `json:"benchmark_annualized_bps"`
+	// BenchmarkValue is what the book would be worth now had the same money
+	// arrived on the same days into the benchmark instead — the visceral form
+	// of the same comparison, and the reason the flows are tracked rather than
+	// only the index.
+	BenchmarkValue *int64 `json:"benchmark_value"`
+	// BenchmarkExhausted is set when the withdrawals this book made would have
+	// emptied the benchmark before the period ended. The synthetic account is
+	// floored at zero because shares nobody owns cannot be sold, so from that
+	// point the two are no longer running the same money and the value
+	// comparison has stopped meaning anything. The index comparison is
+	// unaffected: it never had a balance to run out of.
+	BenchmarkExhausted bool `json:"benchmark_exhausted"`
+	// BenchmarkUnavailable explains in words why there is no comparison, and is
+	// empty when there is one. "Not chosen" and "chosen but unpriced" are
+	// different problems with different fixes, and a reader can act on either.
+	BenchmarkUnavailable string `json:"benchmark_unavailable,omitempty"`
 	// Unavailable explains an empty curve in words, and is empty when there are
 	// points. A book with no stored history reads as "sync prices", not as a
 	// flat line at zero.
@@ -112,6 +146,23 @@ type curveTx struct {
 // traded is excluded whole, trades and all, and counted in WithoutHistory. The
 // alternative is a curve that silently understates the book for every day before
 // its prices begin, which looks like a real drawdown and is not.
+//
+// # The benchmark
+//
+// When the user has chosen one for this currency, the same loop runs a second
+// account beside the book: it starts with the book's own value on the first
+// plotted session, grows by the benchmark's **total** return each day, and takes
+// the same flows on the same days. Its recursion is the book's, rearranged —
+// the curve's index is chained from (value - flow) / previous value, so
+// value = previous * (1 + r) + flow is the identity the book itself satisfies.
+// Running the benchmark by that same identity is what makes the two ends
+// comparable instead of merely adjacent, and it needs no cash balance: a flow is
+// added at the close, exactly the convention the index already assumes.
+//
+// This deliberately answers a narrower question than "would you be richer".
+// Money taken out of this book went somewhere the system does not model, so the
+// claim is only that the same contributions, timed the same way, would have
+// grown to this instead.
 func (d *DB) EquityCurve(userID, from, to string) ([]CurrencyCurve, error) {
 	txs := []curveTx{}
 	err := d.db.Model(&models.Transaction{}).
@@ -146,7 +197,7 @@ func (d *DB) EquityCurve(userID, from, to string) ([]CurrencyCurve, error) {
 
 	curves := make([]CurrencyCurve, 0, len(byCurrency))
 	for currency, ledger := range byCurrency {
-		curve, err := d.currencyCurve(currency, ledger, from, to)
+		curve, err := d.currencyCurve(userID, currency, ledger, from, to)
 		if err != nil {
 			return nil, err
 		}
@@ -159,7 +210,7 @@ func (d *DB) EquityCurve(userID, from, to string) ([]CurrencyCurve, error) {
 }
 
 // currencyCurve builds one currency's curve from its slice of the ledger.
-func (d *DB) currencyCurve(currency models.Currency, ledger []curveTx, from, to string) (CurrencyCurve, error) {
+func (d *DB) currencyCurve(userID string, currency models.Currency, ledger []curveTx, from, to string) (CurrencyCurve, error) {
 	curve := CurrencyCurve{Currency: currency, Points: []CurvePoint{}}
 
 	priced, err := d.priceLedger(ledger, to)
@@ -193,6 +244,11 @@ func (d *DB) currencyCurve(currency models.Currency, ledger []curveTx, from, to 
 		return curve, nil
 	}
 
+	track, benchmarking, err := d.trackFor(&curve, userID, currency, axis[0], to)
+	if err != nil {
+		return curve, err
+	}
+
 	held := map[string]models.PositionState{}
 	var (
 		next        int // the next ledger entry not yet folded in
@@ -200,6 +256,15 @@ func (d *DB) currencyCurve(currency models.Currency, ledger []curveTx, from, to 
 		prevValue   int64
 		index       = float64(indexBase)
 		started     bool
+
+		// The benchmark runs the same money on the same days through a
+		// different holding. benchValue follows the book's own recursion
+		// exactly — yesterday's value, grown by the benchmark's return, plus
+		// today's flow — which is what makes the two comparable rather than
+		// merely adjacent.
+		prevDate   string
+		benchIndex = float64(indexBase)
+		benchValue float64
 	)
 
 	for _, date := range axis {
@@ -256,12 +321,41 @@ func (d *DB) currencyCurve(currency models.Currency, ledger []curveTx, from, to 
 			// bought back into. Whatever arrived today has not been at work yet,
 			// so the index holds and the next session measures against it.
 		}
+		// Both benchmark figures stay at zero when no comparison ran, which is
+		// what CurvePoint promises and what lets the frontend gate on the
+		// envelope alone. Leaving the index sitting at its base instead would
+		// hand every reader a flat line at 100 that nothing had measured.
+		var benchIndexOut, benchValueOut int64
+		if benchmarking {
+			if prevDate == "" {
+				// The first plotted session starts the benchmark with the same
+				// capital the book had at that close, so day one is a tie by
+				// construction and every difference after it was earned.
+				benchValue = float64(value)
+			} else if factor, ok := track.step(prevDate, date); ok {
+				benchIndex *= factor
+				benchValue = benchValue*factor + float64(flow)
+				if benchValue < 0 {
+					// Shares nobody owns cannot be sold: the synthetic account
+					// is empty rather than overdrawn, and from here the two
+					// sides are no longer running the same money.
+					benchValue = 0
+					curve.BenchmarkExhausted = true
+				}
+			}
+			prevDate = date
+			benchIndexOut = int64(math.Round(benchIndex))
+			benchValueOut = int64(math.Round(benchValue))
+		}
+
 		prevValue = value
 		curve.Points = append(curve.Points, CurvePoint{
-			Date:        date,
-			MarketValue: value,
-			NetInvested: netInvested,
-			Index:       int64(math.Round(index)),
+			Date:           date,
+			MarketValue:    value,
+			NetInvested:    netInvested,
+			Index:          int64(math.Round(index)),
+			BenchmarkIndex: benchIndexOut,
+			BenchmarkValue: benchValueOut,
 		})
 	}
 
@@ -277,19 +371,23 @@ func (d *DB) currencyCurve(currency models.Currency, ledger []curveTx, from, to 
 func summarize(curve *CurrencyCurve) {
 	points := curve.Points
 	last := points[len(points)-1]
+	span := days(points[0].Date, last.Date)
 
-	twr := int64(math.Round(float64(last.Index-indexBase) / indexBase * 10000))
+	twr := returnOf(last.Index)
 	curve.TWRBps = &twr
+	curve.AnnualizedBps = annualize(last.Index, span)
 
-	// Annualizing needs a span to divide by, and a curve one session long has
-	// none — reporting a rate from it would be inventing precision.
-	if span := days(points[0].Date, last.Date); span > 0 {
-		years := span / daysPerYear
-		growth := float64(last.Index) / indexBase
-		if years > 0 && growth > 0 {
-			annualized := int64(math.Round((math.Pow(growth, 1/years) - 1) * 10000))
-			curve.AnnualizedBps = &annualized
-		}
+	// The benchmark's two figures are derived the same way from the same span,
+	// which is the point: a comparison between numbers measured differently is
+	// not a comparison. They are stamped only when a benchmark actually ran —
+	// BenchmarkIndex sits at its base when none did, which would read as a flat
+	// 0% rather than as the absence it is.
+	if curve.Benchmark != nil && curve.BenchmarkUnavailable == "" {
+		benchTWR := returnOf(last.BenchmarkIndex)
+		curve.BenchmarkTWRBps = &benchTWR
+		curve.BenchmarkAnnualizedBps = annualize(last.BenchmarkIndex, span)
+		value := last.BenchmarkValue
+		curve.BenchmarkValue = &value
 	}
 
 	peak := points[0].Index
@@ -306,6 +404,27 @@ func summarize(curve *CurrencyCurve) {
 	}
 	drawdown := int64(math.Round(deepest * 10000))
 	curve.MaxDrawdownBps = &drawdown
+}
+
+// returnOf is an index's growth over the whole period, in basis points.
+func returnOf(index int64) int64 {
+	return int64(math.Round(float64(index-indexBase) / indexBase * 10000))
+}
+
+// annualize turns an index's total growth into a yearly rate, or nil when the
+// span is too short to divide by. A curve one session long has no span, and
+// reporting a rate from it would be inventing precision.
+func annualize(index int64, span float64) *int64 {
+	if span <= 0 {
+		return nil
+	}
+	years := span / daysPerYear
+	growth := float64(index) / indexBase
+	if years <= 0 || growth <= 0 {
+		return nil
+	}
+	rate := int64(math.Round((math.Pow(growth, 1/years) - 1) * 10000))
+	return &rate
 }
 
 // daysPerYear matches the actual/365 convention the money-weighted return uses,

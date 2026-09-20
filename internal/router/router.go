@@ -182,6 +182,8 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 		{
 			set.GET("/fees", settings.FeeProfiles)
 			set.PUT("/fees", settings.SaveFeeProfiles)
+			set.GET("/benchmarks", settings.Benchmarks)
+			set.PUT("/benchmarks", settings.SaveBenchmarks)
 		}
 	}
 

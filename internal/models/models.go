@@ -201,6 +201,30 @@ type RecurringPlan struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// Benchmark is the instrument a user's book is measured against, one per
+// currency.
+//
+// Per currency because a TWD book and a USD book are two books with no rate
+// between them, exactly as every total here is per currency: measuring a
+// Taiwanese book against VOO would compare two things denominated in different
+// money and call the exchange rate performance.
+//
+// There is deliberately **no default**, which is the one place this differs
+// from FeeProfile — where a sensible default is merged in at read time. A
+// default benchmark would have to name an instrument, and an instrument exists
+// in this system only once the provider has priced it (POST /instruments). A
+// read that invented master data would break that, and one that named a symbol
+// with no row behind it would break the foreign key every report here assumes.
+// So a book is unmeasured until its owner picks something, and the report says
+// so in words rather than comparing against nothing.
+type Benchmark struct {
+	UserID       string    `gorm:"primaryKey" json:"-"`
+	Currency     Currency  `gorm:"primaryKey" json:"currency"`
+	InstrumentID string    `json:"instrument_id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // MaxPlanDay is the highest day of the month a plan may name. Clamping handles
 // the short months; this only refuses a number that is not a day at all.
 const MaxPlanDay = 31

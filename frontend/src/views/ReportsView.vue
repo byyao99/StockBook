@@ -158,6 +158,18 @@ function entryCounts(s: RealizedSummary): string {
   return parts.join(' · ')
 }
 
+/**
+ * How far ahead of its benchmark a book is, in basis points.
+ *
+ * The difference of two returns, not a return of its own: +500 means the book
+ * gained five percentage points more than the index did over the same sessions.
+ * Null when either side has no figure — a missing comparison is not a tie.
+ */
+function benchmarkEdge(c: CurrencyCurve): number | null {
+  if (c.twr_bps === null || c.benchmark_twr_bps === null) return null
+  return c.twr_bps - c.benchmark_twr_bps
+}
+
 function plClass(value: number): string {
   return value < 0 ? 'loss' : 'gain'
 }
@@ -291,6 +303,21 @@ onMounted(() => selectYear(thisYear))
                 {{ formatBpsMagnitudeOrUnknown(c.max_drawdown_bps) }}
               </strong>
               <span class="muted stat-note">deepest fall below its own high-water mark</span>
+            </div>
+            <!-- The whole point of the comparison, and the only figure here
+                 that answers "was any of this worth it". It sits beside the
+                 book's own time-weighted return because that is the number it
+                 has to be read against — the two are measured the same way,
+                 over the same sessions. -->
+            <div v-if="c.benchmark && !c.benchmark_unavailable" class="stat">
+              <span class="stat-label">vs {{ c.benchmark.symbol }}</span>
+              <strong class="stat-value" :class="plClass(benchmarkEdge(c) ?? 0)">
+                {{ formatBpsOrUnknown(benchmarkEdge(c)) }}
+              </strong>
+              <span class="muted stat-note">
+                {{ c.benchmark.symbol }} returned {{ formatBpsOrUnknown(c.benchmark_twr_bps) }} over
+                the same sessions, distributions counted
+              </span>
             </div>
           </div>
         </template>

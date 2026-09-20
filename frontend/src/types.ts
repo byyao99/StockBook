@@ -317,6 +317,13 @@ export interface CurvePoint {
   // the daily returns with contributions divided out. Saving harder must not
   // look like skill.
   index: number
+  // The same two figures for the benchmark: what a notional 100 in it would
+  // have grown to, and what this book's own money would be worth had it gone
+  // there instead. Both are plain 0 when no benchmark ran — the gate is
+  // `CurrencyCurve.benchmark` being null, which a reader has to consult anyway
+  // to know what the comparison is against.
+  benchmark_index: number
+  benchmark_value: number
 }
 
 // CurrencyCurve is one currency's daily history plus the figures derived from
@@ -338,9 +345,37 @@ export interface CurrencyCurve {
   // they were held. Counting one short would understate the book for every day
   // before its prices begin, which looks exactly like a real drawdown.
   without_history: number
+  // What this currency's book is measured against, or null when nothing was
+  // chosen. Its presence is what decides whether the benchmark figures on this
+  // object and on every point mean anything.
+  benchmark: Benchmark | null
+  benchmark_twr_bps: number | null
+  benchmark_annualized_bps: number | null
+  // What the book would be worth now had the same money arrived on the same
+  // days into the benchmark instead.
+  benchmark_value: number | null
+  // The withdrawals this book made would have emptied the benchmark before the
+  // period ended, so the two stopped running the same money and the value
+  // comparison no longer means anything. The index comparison is unaffected.
+  benchmark_exhausted: boolean
+  // Why there is no comparison, in words. "Not chosen" and "chosen but
+  // unpriced" are different problems with different fixes.
+  benchmark_unavailable?: string
   // Why the curve is empty, in words. Empty when there are points. A book with
   // no stored history reads as "sync prices", never as a flat line at zero.
   unavailable?: string
+}
+
+// Benchmark is the instrument a book is measured against, one per currency —
+// measuring a TWD book against a USD index would report the exchange rate as
+// performance. There is deliberately no default: an instrument exists here only
+// once the provider has priced it, so a book is unmeasured until its owner
+// picks something.
+export interface Benchmark {
+  currency: Currency
+  instrument_id: string
+  symbol: string
+  name: string
 }
 
 // The outcome of one instrument in a price-history sync.

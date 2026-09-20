@@ -42,8 +42,19 @@ export interface ChartGeometry {
   padding: { top: number; right: number; bottom: number; left: number }
 }
 
+/**
+ * Which line a series is. The key drives its colour and its legend entry, so
+ * the benchmark's two are distinct keys rather than a flag on the others.
+ */
+export type SeriesKey =
+  | 'market_value'
+  | 'net_invested'
+  | 'index'
+  | 'benchmark_value'
+  | 'benchmark_index'
+
 export interface CurveSeries {
-  key: 'market_value' | 'net_invested' | 'index'
+  key: SeriesKey
   label: string
   values: number[]
 }
@@ -202,15 +213,39 @@ export function indexAtX(x: number, count: number, plot: Plot): number {
  * Value mode draws market value against money paid in. They share one scale
  * because they are the same unit and the gap between them *is* the gain — which
  * is only readable when both are measured the same way.
+ *
+ * The benchmark joins whichever mode is showing, and belongs on the same axis
+ * in both: its value is the same money in a different holding, and its index is
+ * built from the same notional 100. That is the whole reason it can be drawn at
+ * all — the thing the two modes exist to keep apart is money against an index,
+ * not a book against a benchmark.
+ *
+ * `benchmark` is passed rather than read off the points because the points
+ * carry 0 when no comparison ran, and a flat line along the bottom is exactly
+ * the reading "unknown is not zero" exists to prevent.
  */
-export function seriesOf(points: CurvePoint[], mode: CurveMode): CurveSeries[] {
+export function seriesOf(
+  points: CurvePoint[],
+  mode: CurveMode,
+  benchmark: string | null = null,
+): CurveSeries[] {
   if (mode === 'performance') {
-    return [{ key: 'index', label: 'Index', values: points.map((p) => p.index) }]
+    const out: CurveSeries[] = [
+      { key: 'index', label: 'This book', values: points.map((p) => p.index) },
+    ]
+    if (benchmark) {
+      out.push({ key: 'benchmark_index', label: benchmark, values: points.map((p) => p.benchmark_index) })
+    }
+    return out
   }
-  return [
+  const out: CurveSeries[] = [
     { key: 'market_value', label: 'Market value', values: points.map((p) => p.market_value) },
     { key: 'net_invested', label: 'Money in', values: points.map((p) => p.net_invested) },
   ]
+  if (benchmark) {
+    out.push({ key: 'benchmark_value', label: `In ${benchmark}`, values: points.map((p) => p.benchmark_value) })
+  }
+  return out
 }
 
 /**
@@ -243,9 +278,10 @@ export function buildCurveChart(
   points: CurvePoint[],
   mode: CurveMode,
   geometry: ChartGeometry,
+  benchmark: string | null = null,
 ): ChartModel {
   const plot = plotOf(geometry)
-  const series = seriesOf(points, mode)
+  const series = seriesOf(points, mode, benchmark)
   // One extent across every series in the mode: two money lines on separate
   // scales would put the gain between them wherever the scaling happened to
   // land it.
