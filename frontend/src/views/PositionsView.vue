@@ -471,18 +471,17 @@ onMounted(async () => {
           <tbody>
             <tr v-for="p in positions" :key="p.id" :class="{ closed: p.quantity === 0 }">
               <td>
-                <!-- The symbol links through to what the company itself is
-                     doing. Only an open holding does: the research feed drops
-                     closed ones deliberately, so a link from a sold position
-                     would land on a page with nothing to say about it. -->
+                <!-- The symbol links to the holding's own page, which is where
+                     its history, its own rate of return and its link onward to
+                     the research feed all live. A closed holding links too: its
+                     entries and what it banked are exactly what a reader is
+                     looking for once it is sold. -->
                 <RouterLink
-                  v-if="p.quantity > 0"
-                  :to="{ name: 'research', query: { instrument_id: p.instrument_id } }"
+                  :to="{ name: 'holding', params: { id: p.instrument_id } }"
                   class="symbol-link"
                 >
                   {{ p.symbol }}
                 </RouterLink>
-                <strong v-else>{{ p.symbol }}</strong>
                 <div class="muted">{{ p.name }}</div>
               </td>
               <td class="muted">{{ p.currency }}</td>

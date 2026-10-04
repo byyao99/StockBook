@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -45,4 +46,20 @@ func (h *PositionHandler) Summary(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": summary})
+}
+
+// Detail handles GET /api/v1/positions/:instrument_id, always scoped to the
+// caller: one holding's position, what it has banked over its whole life, and
+// its own money-weighted return.
+//
+// An instrument the caller has never traded is 404 rather than an empty
+// holding, and so is one another user holds — the same rule the ledger follows,
+// so an id cannot be probed for existence.
+func (h *PositionHandler) Detail(c *gin.Context) {
+	detail, err := h.db.HoldingDetail(callerID(c), c.Param("instrument_id"), time.Now())
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": detail})
 }

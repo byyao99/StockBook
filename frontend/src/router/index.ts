@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import PositionsView from '../views/PositionsView.vue'
+import HoldingView from '../views/HoldingView.vue'
 import TransactionsView from '../views/TransactionsView.vue'
 import ReportsView from '../views/ReportsView.vue'
 import ResearchView from '../views/ResearchView.vue'
@@ -16,6 +17,15 @@ export const router = createRouter({
       path: '/positions',
       name: 'positions',
       component: PositionsView,
+      meta: { requiresAuth: true },
+    },
+    // One holding's own page. The parameter is the instrument id, which is what
+    // the positions list and the ledger both key a holding by; the position's
+    // own id is an implementation detail of the cache behind it.
+    {
+      path: '/positions/:id',
+      name: 'holding',
+      component: HoldingView,
       meta: { requiresAuth: true },
     },
     {

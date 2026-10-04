@@ -133,6 +133,10 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 		{
 			p.GET("", position.List)
 			p.GET("/summary", position.Summary)
+			// One holding's own page. It sits under /positions rather than
+			// under /reports because what it answers is a position — the
+			// reports each span a book and a period, and this spans neither.
+			p.GET("/:instrument_id", position.Detail)
 		}
 
 		// Reports read the caller's own ledger and nobody else's, on exactly the

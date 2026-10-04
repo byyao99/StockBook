@@ -69,6 +69,11 @@ func (h *ReportHandler) Hindsight(c *gin.Context) {
 // so unlike the other reports the period does not change what is counted — the
 // whole ledger is always folded, and the window only decides which days are
 // reported. Narrowing it to last month still shows holdings bought years ago.
+//
+// ?instrument_id narrows the fold to one holding, which is what a holding's own
+// page draws. It narrows the *ledger* and nothing else: the index still divides
+// out contributions and the benchmark still runs the same money through the
+// chosen index, so the chart means the same thing at either scope.
 func (h *ReportHandler) Curve(c *gin.Context) {
 	from, to := c.Query("from"), c.Query("to")
 	for _, bound := range []string{from, to} {
@@ -81,7 +86,17 @@ func (h *ReportHandler) Curve(c *gin.Context) {
 		}
 	}
 
-	curves, err := h.db.EquityCurve(callerID(c), from, to)
+	var (
+		curves       []db.CurrencyCurve
+		err          error
+		userID       = callerID(c)
+		instrumentID = c.Query("instrument_id")
+	)
+	if instrumentID == "" {
+		curves, err = h.db.EquityCurve(userID, from, to)
+	} else {
+		curves, err = h.db.InstrumentCurve(userID, instrumentID, from, to)
+	}
 	if err != nil {
 		respondDBError(c, err)
 		return

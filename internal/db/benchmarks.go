@@ -218,7 +218,7 @@ func (d *DB) trackFor(curve *CurrencyCurve, userID string, currency models.Curre
 		return benchmarkTrack{}, false, err
 	}
 	if !ok {
-		curve.BenchmarkUnavailable = "no benchmark chosen for " + string(currency) + " — pick one on the Account page"
+		curve.BenchmarkUnavailable = "no benchmark chosen for " + string(currency) + " — choose one on the Reports page"
 		return benchmarkTrack{}, false, nil
 	}
 	curve.Benchmark = &view

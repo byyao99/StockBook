@@ -164,10 +164,33 @@ type curveTx struct {
 // claim is only that the same contributions, timed the same way, would have
 // grown to this instead.
 func (d *DB) EquityCurve(userID, from, to string) ([]CurrencyCurve, error) {
+	return d.equityCurve(userID, "", from, to)
+}
+
+// InstrumentCurve is EquityCurve narrowed to a single holding: the same daily
+// fold over the same rules, with every other instrument's trades left out.
+//
+// It is a narrowing of the ledger, not of the arithmetic. The index still
+// divides out contributions, so adding to a position does not read as
+// performance; the benchmark still runs the same money on the same days
+// through the chosen index, which here answers the sharper question of whether
+// this one holding was worth owning instead of it. An instrument whose stored
+// history does not reach its first trade is still excluded whole — which for a
+// single-instrument curve means an empty one, saying so in words.
+func (d *DB) InstrumentCurve(userID, instrumentID, from, to string) ([]CurrencyCurve, error) {
+	return d.equityCurve(userID, instrumentID, from, to)
+}
+
+// equityCurve builds the curves, optionally narrowed to one instrument.
+func (d *DB) equityCurve(userID, instrumentID, from, to string) ([]CurrencyCurve, error) {
 	txs := []curveTx{}
-	err := d.db.Model(&models.Transaction{}).
+	query := d.db.Model(&models.Transaction{}).
 		Joins("JOIN instruments ON instruments.id = transactions.instrument_id").
-		Where("transactions.user_id = ?", userID).
+		Where("transactions.user_id = ?", userID)
+	if instrumentID != "" {
+		query = query.Where("transactions.instrument_id = ?", instrumentID)
+	}
+	err := query.
 		Select(`transactions.instrument_id AS instrument_id,
 			transactions.side AS side,
 			transactions.quantity AS quantity,
@@ -197,7 +220,7 @@ func (d *DB) EquityCurve(userID, from, to string) ([]CurrencyCurve, error) {
 
 	curves := make([]CurrencyCurve, 0, len(byCurrency))
 	for currency, ledger := range byCurrency {
-		curve, err := d.currencyCurve(userID, currency, ledger, from, to)
+		curve, err := d.currencyCurve(userID, currency, ledger, from, to, instrumentID != "")
 		if err != nil {
 			return nil, err
 		}
@@ -210,7 +233,11 @@ func (d *DB) EquityCurve(userID, from, to string) ([]CurrencyCurve, error) {
 }
 
 // currencyCurve builds one currency's curve from its slice of the ledger.
-func (d *DB) currencyCurve(userID string, currency models.Currency, ledger []curveTx, from, to string) (CurrencyCurve, error) {
+// single says the ledger has already been narrowed to one holding, which only
+// affects how an empty curve explains itself: "no holding in this currency" is
+// the right sentence for a book and the wrong one on a holding's own page,
+// where it reads as though some other holding were the problem.
+func (d *DB) currencyCurve(userID string, currency models.Currency, ledger []curveTx, from, to string, single bool) (CurrencyCurve, error) {
 	curve := CurrencyCurve{Currency: currency, Points: []CurvePoint{}}
 
 	priced, err := d.priceLedger(ledger, to)
@@ -223,6 +250,9 @@ func (d *DB) currencyCurve(userID string, currency models.Currency, ledger []cur
 
 	if len(series) == 0 {
 		curve.Unavailable = "no holding in this currency has stored price history covering when it was held; sync prices first"
+		if single {
+			curve.Unavailable = "this holding has no stored price history covering when it was held; sync prices first"
+		}
 		return curve, nil
 	}
 

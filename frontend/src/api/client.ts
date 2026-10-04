@@ -12,6 +12,7 @@ import type {
   FeeProfileInput,
   FinancialPeriod,
   HindsightSummary,
+  HoldingDetail,
   Instrument,
   InstrumentCandidate,
   InstrumentInput,
@@ -208,6 +209,12 @@ export const positionApi = {
       `/positions${pageQuery(limit, offset)}${includeClosed ? '&include_closed=true' : ''}`,
     ),
   summary: () => request<CurrencySummary[]>('/positions/summary'),
+
+  // One holding's own page: the position, what it has banked over its whole
+  // life, and its own money-weighted return. 404 for an instrument the caller
+  // has never traded — including one another user holds, so an id cannot be
+  // probed for existence.
+  detail: (instrumentId: string) => request<HoldingDetail>(`/positions/${instrumentId}`),
 }
 
 // The `?from=&to=` shared by the reports that take a period. Both bounds are
@@ -246,8 +253,19 @@ export const reportApi = {
   // SESSIONS, not trades: the whole ledger is always folded and the window only
   // decides which days are drawn, so narrowing to last month still shows
   // holdings bought years ago.
-  curve: (from?: string, to?: string) =>
-    request<CurrencyCurve[]>(`/reports/curve${dateRangeQuery(from, to)}`),
+  // `instrumentId` narrows the fold to one holding, which is what a holding's
+  // own page draws. It narrows the LEDGER and nothing else: the index still
+  // divides out contributions and the benchmark still runs the same money
+  // through the chosen index, so the chart means the same thing at either
+  // scale.
+  curve: (from?: string, to?: string, instrumentId?: string) => {
+    const range = dateRangeQuery(from, to)
+    if (!instrumentId) return request<CurrencyCurve[]>(`/reports/curve${range}`)
+    const separator = range ? '&' : '?'
+    return request<CurrencyCurve[]>(
+      `/reports/curve${range}${separator}instrument_id=${instrumentId}`,
+    )
+  },
 
   // Distributions the book was entitled to with no ledger entry against them.
   // It takes no period: an unrecorded payout does not stop being unrecorded

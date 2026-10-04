@@ -740,3 +740,52 @@ export interface UnadjustedSplit {
   acknowledged: boolean
 }
 
+/**
+ * Everything one holding's own page needs: the position, what it has banked
+ * over its whole life, and how fast the money in it has grown.
+ *
+ * It is deliberately **lifetime**, with no period bounds — unlike the reports on
+ * /reports, which answer "how did this period go?". A question about one
+ * position is not improved by hiding half its history: the average cost every
+ * figure here is built on was formed by trades a window would have excluded.
+ *
+ * `invested`, `proceeds` and `dividends` are cash as it moved, fees included.
+ * `trading_pl` is what the sales banked against the average cost they released,
+ * which is the different question the realized report answers; the two differ by
+ * whatever is still held. `realized_pl` is the position's own running total, and
+ * `unstamped_entries` is what says whether the decomposition beside it is
+ * complete.
+ *
+ * `yield_on_cost_bps` is `trailing_dividends` against what the shares still held
+ * cost — against **cost**, not market value, because that is what a long-term
+ * holder is asking: what the money they committed now pays them. It is null,
+ * never 0, once the shares are gone, since there is no cost left to divide by
+ * and 0% would read as an income holding that stopped paying.
+ *
+ * `xirr_bps` is the money-weighted return on this holding alone, measured the
+ * same way as the book-wide figure, and null for a holding held under a year.
+ * `unavailable` says in words why there is none — a book that cannot be
+ * measured has not broken even.
+ */
+export interface HoldingDetail {
+  position: Position
+  as_of: string
+  first_traded_at: string | null
+  last_traded_at: string | null
+  buys: number
+  sells: number
+  dividend_count: number
+  unstamped_entries: number
+  invested: number
+  proceeds: number
+  dividends: number
+  realized_pl: number
+  trading_pl: number
+  // What this holding paid out over the last 365 days. A trailing figure rather
+  // than a forecast: this system does not predict distributions, it reports what
+  // was banked — which understates a holding bought part-way through the year.
+  trailing_dividends: number
+  yield_on_cost_bps: number | null
+  xirr_bps: number | null
+  unavailable?: string
+}
