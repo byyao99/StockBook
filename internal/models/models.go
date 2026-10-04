@@ -278,6 +278,67 @@ type DividendEvent struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// SplitRatioScale is how many stored units make a ratio of one, so a 2:1 split
+// is 2*SplitRatioScale.
+//
+// Parts per million, matching the scale a fee rate uses and for the same
+// reason. A ratio is not reliably a whole number or even a tidy fraction: a
+// Taiwanese stock dividend of NT$0.8 a share turns 100 shares into 108, which
+// is a ratio of 1.08, and the provider reports plenty like it. A pair of
+// integers would hold those exactly too, but at the cost of every consumer
+// doing its own division; one integer at a fine enough scale holds every ratio
+// either market actually declares without one.
+const SplitRatioScale int64 = 1_000_000
+
+// SplitEvent is a change the provider reports to what one share *is*: a split, a
+// reverse split, or a stock dividend.
+//
+// Like DividendEvent it is what the market did, never what the user banked, and
+// it is never posted. Unlike a dividend, though, there is no entry the user
+// could write that would record it — this system deliberately does not model
+// splits (see the README), because a split invalidates every share count
+// recorded before it and rebuilding those is a different project.
+//
+// What it exists for is that the alternative to knowing is much worse than
+// knowing. The closes stored in DailyClose are stated in *post*-split shares
+// all the way back, and so is Instrument.LastPrice, while the ledger records
+// the shares as they were actually bought. After a 2:1 split, a holding is
+// therefore valued at half what it is worth, and every figure spanning the date
+// — the curve, the drawdown, the benchmark comparison, the unrealized profit on
+// the holdings page — is wrong by that factor with nothing on screen saying so.
+// A stored event is what lets the book say so.
+//
+// RatioPpm is how many shares one share became, in SplitRatioScale units. Date
+// is the ex-date. The composite key makes a refetch idempotent, exactly as
+// DailyClose's and DividendEvent's do.
+type SplitEvent struct {
+	InstrumentID string    `gorm:"primaryKey" json:"instrument_id"`
+	Date         string    `gorm:"primaryKey" json:"date"`
+	RatioPpm     int64     `json:"ratio_ppm"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// SplitAcknowledgement records that one user has dealt with one split in their
+// own ledger and does not want to be told about it again.
+//
+// A warning nobody can dismiss is a warning everybody learns to scroll past,
+// and this one cannot resolve itself: the condition that raises it is that
+// shares were held across the split date, which stays true forever no matter
+// what the user does about it. So the acknowledgement is a separate fact, owned
+// by the user rather than by the market, which is why it is keyed by user where
+// SplitEvent is not.
+//
+// It deliberately claims nothing about the ledger being *correct* afterwards —
+// only that its owner has seen this event and decided. Nothing downstream reads
+// it; it gates a prompt and nothing else.
+type SplitAcknowledgement struct {
+	UserID       string    `gorm:"primaryKey" json:"-"`
+	InstrumentID string    `gorm:"primaryKey" json:"instrument_id"`
+	Date         string    `gorm:"primaryKey" json:"date"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 // NewsItem is one headline about a listed company.
 //
 // Unlike everything else stored here it is not a fact about anybody's book: it

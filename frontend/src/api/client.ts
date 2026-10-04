@@ -31,6 +31,7 @@ import type {
   TransactionEdit,
   TransactionInput,
   TransactionSide,
+  UnadjustedSplit,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -252,6 +253,28 @@ export const reportApi = {
   // It takes no period: an unrecorded payout does not stop being unrecorded
   // because the year turned over.
   pendingDividends: () => request<PendingDividend[]>('/reports/dividends'),
+
+  // Splits this book held shares across. A warning rather than a prompt: there
+  // is no entry that settles one, because this system does not model splits.
+  // `includeAcknowledged` keeps the dismissed ones in the answer, flagged, so a
+  // holding's page can offer the undo.
+  splits: (includeAcknowledged = false) =>
+    request<UnadjustedSplit[]>(
+      `/reports/splits${includeAcknowledged ? '?include_acknowledged=true' : ''}`,
+    ),
+
+  // Dismissing is reversible on purpose: the warning can never resolve itself,
+  // so a misclick would otherwise silence a genuinely broken history for good.
+  acknowledgeSplit: (instrumentId: string, date: string) =>
+    request<void>('/reports/splits/ack', {
+      method: 'POST',
+      body: JSON.stringify({ instrument_id: instrumentId, date }),
+    }),
+  forgetSplitAcknowledgement: (instrumentId: string, date: string) =>
+    request<void>('/reports/splits/ack', {
+      method: 'DELETE',
+      body: JSON.stringify({ instrument_id: instrumentId, date }),
+    }),
 }
 
 // A user's own preferences. Scoped to the caller by the server, so there is no

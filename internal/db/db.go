@@ -107,6 +107,8 @@ func Open(dsn string) (*DB, error) {
 		&models.Position{},
 		&models.DailyClose{},
 		&models.DividendEvent{},
+		&models.SplitEvent{},
+		&models.SplitAcknowledgement{},
 		&models.FeeProfile{},
 		&models.NewsItem{},
 		&models.NewsMention{},

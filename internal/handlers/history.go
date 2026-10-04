@@ -36,8 +36,13 @@ type syncResult struct {
 	// Dividends counts the distributions learned in the same response. They cost
 	// no extra request — the provider returns them alongside the closes — and a
 	// run that finds one is how an unrecorded payout first becomes visible.
-	Dividends int    `json:"dividends"`
-	Error     string `json:"error,omitempty"`
+	Dividends int `json:"dividends"`
+	// Splits counts the share-count changes learned in the same response. They
+	// are rarer than distributions and matter more: a split the book has not
+	// been told about silently misstates every figure spanning it, so a run
+	// that finds one is how that first becomes visible.
+	Splits int    `json:"splits"`
+	Error  string `json:"error,omitempty"`
 }
 
 const (
@@ -212,6 +217,24 @@ func (h *InstrumentHandler) syncOne(ctx context.Context, item models.Instrument)
 		return result
 	}
 
+	// Splits ride along in the same payload, and are stored on the same terms:
+	// what the market did to the security, never an entry in anybody's ledger.
+	// There is no entry that could record one — this system does not model
+	// splits — so what these rows buy is the warning, which is worth far more
+	// than the silence it replaces.
+	splits := make([]models.SplitEvent, 0, len(history.Splits))
+	for _, split := range history.Splits {
+		splits = append(splits, models.SplitEvent{
+			Date:     split.Date,
+			RatioPpm: split.RatioPpm,
+		})
+	}
+	if err := h.db.SaveSplitEvents(item.ID, splits); err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		return result
+	}
+
 	sessions, err := h.db.CountDailyCloses(item.ID)
 	if err != nil {
 		result.Status = "failed"
@@ -223,6 +246,7 @@ func (h *InstrumentHandler) syncOne(ctx context.Context, item models.Instrument)
 	result.Added = len(rows)
 	result.Sessions = sessions
 	result.Dividends = len(events)
+	result.Splits = len(splits)
 	return result
 }
 

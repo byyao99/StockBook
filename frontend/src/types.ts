@@ -701,3 +701,38 @@ export interface PendingPurchase {
   estimated_price: number | null
   estimated_shares: number | null
 }
+
+/**
+ * A split this book held shares across: the ledger and the stored prices have
+ * stopped agreeing about what a share is.
+ *
+ * This is a **warning, not a prompt**, which is what separates it from
+ * `PendingDividend` beside it. A pending dividend asks for an entry that will
+ * settle it; there is no entry that settles a split, because this system
+ * deliberately does not model them. What it reports is that stored closes and
+ * `last_price` are stated in *post*-split shares all the way back while the
+ * ledger records the shares as they were bought — so every figure spanning the
+ * date is wrong by the ratio, with nothing else on screen saying so.
+ *
+ * `ratio_ppm` is how many shares one share became, in millionths: 2_000_000 is
+ * a 2:1 split and 1_080_000 an 8% stock dividend, which is the common Taiwanese
+ * case and the reason it is not a whole number. `shares` is what the ledger says
+ * was held the session before — in pre-split shares, which is the count the
+ * warning is about.
+ *
+ * `acknowledged` is whether this reader has already dealt with it. The warning
+ * can never resolve itself (shares were held across the date forever), so it has
+ * to be dismissible — and reversible, which is what a holding's own page offers.
+ */
+export interface UnadjustedSplit {
+  instrument_id: string
+  symbol: string
+  name: string
+  currency: Currency
+  // The ex-date: the first session that traded in the new shares.
+  date: string
+  ratio_ppm: number
+  shares: number
+  acknowledged: boolean
+}
+

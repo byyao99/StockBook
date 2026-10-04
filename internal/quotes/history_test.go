@@ -264,3 +264,81 @@ func TestHistoryWithoutDividendsIsFine(t *testing.T) {
 		t.Errorf("got %d dividends, want none: %+v", len(got.Dividends), got.Dividends)
 	}
 }
+
+// A real response, trimmed: splits arrive in the same payload as the closes and
+// the distributions, keyed by their own timestamp. The second one is the
+// Taiwanese case the integer pair exists for — an 8% stock dividend, which
+// turns 25 shares into 27 and is not a whole-number ratio.
+//
+//	1751331600 = 2025-07-01, 1765411200 = 2025-12-11
+const twSplitBody = `{"chart":{"result":[{
+	"meta":{"symbol":"2330.TW","currency":"TWD"},
+	"timestamp":[1751331600,1751418000],
+	"indicators":{"quote":[{"close":[1000.0,1010.5]}]},
+	"events":{"splits":{
+		"1765411200":{"date":1765411200,"numerator":27,"denominator":25,"splitRatio":"27:25"},
+		"1751331600":{"date":1751331600,"numerator":2,"denominator":1,"splitRatio":"2:1"},
+		"1757980800":{"date":1757980800,"numerator":1,"denominator":1,"splitRatio":"1:1"}
+	}}
+}],"error":null}}`
+
+// Splits come back with the closes, which is what makes learning them free —
+// and what makes the warning built on them cost no extra request.
+func TestHistoryReadsSplitsFromTheSameResponse(t *testing.T) {
+	c := serve(t, http.StatusOK, twSplitBody)
+
+	got, err := c.History(context.Background(), "2330.TW",
+		day(t, "2025-07-01"), day(t, "2026-07-01"))
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	// The 1:1 is dropped: it changes no holding, and a warning about a book
+	// with nothing wrong with it teaches the reader to ignore the next one.
+	if len(got.Splits) != 2 {
+		t.Fatalf("got %d splits, want 2: %+v", len(got.Splits), got.Splits)
+	}
+	if got.Splits[0].Date >= got.Splits[1].Date {
+		t.Errorf("splits out of order: %+v", got.Splits)
+	}
+	if got.Splits[0].RatioPpm != 2_000_000 {
+		t.Errorf("2:1 split = %d ppm, want 2000000", got.Splits[0].RatioPpm)
+	}
+	// 27/25 is 1.08 exactly, which is the whole reason the ratio is stored at
+	// this scale rather than as a whole number.
+	if got.Splits[1].RatioPpm != 1_080_000 {
+		t.Errorf("27:25 split = %d ppm, want 1080000", got.Splits[1].RatioPpm)
+	}
+}
+
+// The ordinary case: most instruments have never split, and the events block is
+// absent rather than empty.
+func TestHistoryWithoutSplitsIsFine(t *testing.T) {
+	c := serve(t, http.StatusOK, twHistoryBody)
+
+	got, err := c.History(context.Background(), "2330.TW",
+		day(t, "2025-07-01"), day(t, "2025-07-03"))
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(got.Splits) != 0 {
+		t.Errorf("got %d splits, want none: %+v", len(got.Splits), got.Splits)
+	}
+}
+
+// The request has to ask for both event kinds, or the provider returns neither
+// and every warning built on them is silently never raised.
+func TestHistoryAsksForDividendsAndSplits(t *testing.T) {
+	var query string
+	c := serveCapturing(t, twHistoryBody, &query)
+	if _, err := c.History(context.Background(), "2330.TW",
+		day(t, "2025-07-01"), day(t, "2025-07-03")); err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		t.Fatalf("parse query %q: %v", query, err)
+	}
+	if got := values.Get("events"); got != "div,split" {
+		t.Errorf("events=%q, want %q", got, "div,split")
+	}
+}

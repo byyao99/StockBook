@@ -144,6 +144,14 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 			rep.GET("/hindsight", report.Hindsight)
 			rep.GET("/curve", report.Curve)
 			rep.GET("/dividends", report.Dividends)
+			// A split warning is personal in the same way, even though the
+			// event behind it is shared market data: what makes it worth
+			// raising is that *this* book held shares across the date, and the
+			// acknowledgement that silences it is one reader's decision about
+			// their own ledger.
+			rep.GET("/splits", report.Splits)
+			rep.POST("/splits/ack", report.AcknowledgeSplit)
+			rep.DELETE("/splits/ack", report.ForgetSplitAcknowledgement)
 		}
 
 		// What the companies in a book are doing, as opposed to what the book

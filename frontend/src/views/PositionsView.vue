@@ -21,12 +21,14 @@ import {
   unpricedCount,
 } from '../positionMath'
 import PaginationBar from '../components/PaginationBar.vue'
+import SplitWarnings from '../components/SplitWarnings.vue'
 import type {
   Currency,
   CurrencySummary,
   Position,
   RefreshResult,
   ReturnsSummary,
+  UnadjustedSplit,
 } from '../types'
 
 const PAGE_SIZE = 20
@@ -51,20 +53,27 @@ const success = ref('')
 // page; with quotes managed from here they have to be shown here, or a failed
 // fetch would report a count with no way to see which symbol it was.
 const refreshResults = ref<RefreshResult[]>([])
+// Splits this book held shares across. Not a prompt like the pending dividends
+// on the Ledger page — there is no entry that settles one — but a warning that
+// the figures on this very page are out by the ratio until the entries behind
+// them are restated.
+const splits = ref<UnadjustedSplit[]>([])
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [page, totals, rates] = await Promise.all([
+    const [page, totals, rates, unadjusted] = await Promise.all([
       positionApi.list(PAGE_SIZE, offset.value, includeClosed.value),
       positionApi.summary(),
       reportApi.returns(),
+      reportApi.splits(),
     ])
     positions.value = page.items
     total.value = page.pagination.total
     summaries.value = totals
     returns.value = rates
+    splits.value = unadjusted
     // If a filter change emptied the current page, step back one.
     if (positions.value.length === 0 && offset.value > 0) {
       offset.value = Math.max(0, offset.value - PAGE_SIZE)
@@ -199,6 +208,11 @@ onMounted(async () => {
         {{ refreshing ? 'Fetching quotes…' : 'Refresh quotes' }}
       </button>
     </div>
+
+    <!-- Above everything, because what it says is that the figures below are
+         wrong. It is deliberately not folded into a currency block: a reader
+         scanning the cards has to meet it before they believe one. -->
+    <SplitWarnings :splits="splits" show-symbol @changed="load" />
 
     <ul v-if="refreshResults.length > 0" class="refresh-log">
       <li v-for="r in refreshResults" :key="r.instrument_id">

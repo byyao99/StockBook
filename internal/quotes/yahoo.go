@@ -175,6 +175,16 @@ type chartResult struct {
 			Amount float64 `json:"amount"`
 			Date   int64   `json:"date"`
 		} `json:"dividends"`
+		// Splits arrive on exactly the same terms as the dividends, and for the
+		// same price: one request parameter asks for both. The provider states
+		// the ratio as a pair rather than a number because a stock dividend is
+		// commonly a fraction — 27:25 rather than 2:1 — and the pair is exact
+		// where a float is not.
+		Splits map[string]struct {
+			Numerator   float64 `json:"numerator"`
+			Denominator float64 `json:"denominator"`
+			Date        int64   `json:"date"`
+		} `json:"splits"`
 	} `json:"events"`
 }
 
@@ -189,6 +199,24 @@ type chartResult struct {
 type Dividend struct {
 	ExDate string
 	Amount int64
+}
+
+// Split is one change the provider reports to what a share *is*: a split, a
+// reverse split, or — the common Taiwanese case — a stock dividend, which
+// multiplies a holding by a fraction rather than by a whole number.
+//
+// Date is the ex-date, the session the shares first traded in their new form,
+// and is a calendar day for the reason every other date here is.
+//
+// RatioPpm is how many shares one share became, in parts per million: a 2:1
+// split is 2_000_000, a 1-for-5 reverse split is 200_000, and an 8% stock
+// dividend is 1_080_000. Parts per million rather than the provider's own
+// numerator and denominator for the reason a fee rate is stored that way — the
+// ratio is often not a whole number, and this is the scale that keeps every one
+// a market actually declares an exact integer.
+type Split struct {
+	Date     string
+	RatioPpm int64
 }
 
 // Fetch returns the current quote for one Yahoo ticker.
@@ -300,6 +328,12 @@ type History struct {
 	// same response as the closes, so learning what a holding paid costs no
 	// extra request — it is the same call the price sync already makes.
 	Dividends []Dividend
+	// Splits over the same window, on the same terms. They matter more than
+	// they look: the closes in this series are stated in *post*-split shares
+	// all the way back, while a ledger records the shares as they were bought,
+	// so a split nobody noticed makes every figure spanning it wrong without
+	// changing anything on screen that says so.
+	Splits []Split
 }
 
 // History fetches daily closing prices for ticker over [from, to].
@@ -317,10 +351,10 @@ func (c *Client) History(ctx context.Context, ticker string, from, to time.Time)
 		return History{}, fmt.Errorf("history window ends (%s) before it starts (%s)",
 			to.Format(time.DateOnly), from.Format(time.DateOnly))
 	}
-	// events=div comes along for free: the provider returns distributions in the
-	// same payload as the closes, so a price sync learns what was paid without a
-	// second round trip.
-	query := fmt.Sprintf("interval=1d&period1=%d&period2=%d&events=div",
+	// events=div,split comes along for free: the provider returns distributions
+	// and share-count changes in the same payload as the closes, so a price sync
+	// learns both without a second round trip.
+	query := fmt.Sprintf("interval=1d&period1=%d&period2=%d&events=div,split",
 		from.Unix(), to.Add(24*time.Hour).Unix())
 
 	result, err := c.chart(ctx, ticker, query)
@@ -351,6 +385,7 @@ func (c *Client) History(ctx context.Context, ticker string, from, to time.Time)
 		Currency:  currency,
 		Closes:    out,
 		Dividends: dividendsOf(result),
+		Splits:    splitsOf(result),
 	}, nil
 }
 
@@ -371,6 +406,34 @@ func dividendsOf(result chartResult) []Dividend {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ExDate < out[j].ExDate })
+	return out
+}
+
+// splitsOf reads the share-count changes out of a chart result, in date order.
+//
+// A ratio of exactly one is dropped rather than recorded. The provider does
+// carry such an event occasionally, and a "split" that leaves every holding
+// exactly as it was is not a thing that happened to anybody's shares — storing
+// it would raise a warning about a book that is perfectly correct, which is the
+// fastest way to teach a reader to ignore the warning that matters.
+//
+// The ratio is rounded to parts per million once, here, at the boundary where
+// the provider's floats stop. A ratio the provider cannot state — a zero or
+// negative numerator or denominator — is skipped, since there is no share count
+// it could describe.
+func splitsOf(result chartResult) []Split {
+	out := make([]Split, 0, len(result.Events.Splits))
+	for _, event := range result.Events.Splits {
+		if event.Date == 0 || event.Numerator <= 0 || event.Denominator <= 0 {
+			continue
+		}
+		ratio := int64(math.Round(event.Numerator / event.Denominator * float64(models.SplitRatioScale)))
+		if ratio == models.SplitRatioScale {
+			continue
+		}
+		out = append(out, Split{Date: barDate(event.Date), RatioPpm: ratio})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
 	return out
 }
 

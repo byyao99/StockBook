@@ -60,8 +60,10 @@ func (d *DB) SaveDividendEvents(instrumentID string, events []models.DividendEve
 	}).CreateInBatches(rows, 500).Error
 }
 
-// dividendLedgerRow is the flat scan target for the entitlement replay.
-type dividendLedgerRow struct {
+// ledgerShareRow is the flat scan target for a replay that only needs to know
+// how many shares were held on a date. Both the dividend prompt and the split
+// warning ask exactly that, of the same ledger, so they share it.
+type ledgerShareRow struct {
 	InstrumentID string
 	Symbol       string
 	Name         string
@@ -89,7 +91,7 @@ type dividendLedgerRow struct {
 // Reporting it as a prompt rather than posting it keeps the ledger what it is —
 // a record of what the user says happened.
 func (d *DB) PendingDividends(userID string) ([]PendingDividend, error) {
-	entries := []dividendLedgerRow{}
+	entries := []ledgerShareRow{}
 	err := d.db.Model(&models.Transaction{}).
 		Joins("JOIN instruments ON instruments.id = transactions.instrument_id").
 		Where("transactions.user_id = ?", userID).
@@ -108,7 +110,7 @@ func (d *DB) PendingDividends(userID string) ([]PendingDividend, error) {
 		return []PendingDividend{}, nil
 	}
 
-	held := map[string][]dividendLedgerRow{}
+	held := map[string][]ledgerShareRow{}
 	for _, e := range entries {
 		held[e.InstrumentID] = append(held[e.InstrumentID], e)
 	}
@@ -166,7 +168,7 @@ func (d *DB) PendingDividends(userID string) ([]PendingDividend, error) {
 
 // sharesOn reports how many shares the ledger leaves held at the close of date.
 // A dividend entry moves no shares, so only buys and sells count.
-func sharesOn(ledger []dividendLedgerRow, date string) int64 {
+func sharesOn(ledger []ledgerShareRow, date string) int64 {
 	var shares int64
 	for _, e := range ledger {
 		if e.TradedAt.UTC().Format(time.DateOnly) > date {
@@ -194,7 +196,7 @@ type dividendClaims struct {
 	taken []bool
 }
 
-func newDividendClaims(ledger []dividendLedgerRow) *dividendClaims {
+func newDividendClaims(ledger []ledgerShareRow) *dividendClaims {
 	c := &dividendClaims{}
 	for _, e := range ledger {
 		if e.Side != models.SideDividend {
