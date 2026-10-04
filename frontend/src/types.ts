@@ -138,6 +138,10 @@ export interface Position {
   symbol: string
   name: string
   market: string
+  // The provider's own word for what this is ("EQUITY", "ETF"), or "" when it
+  // never said. Carried so a book can be sliced by what it holds rather than
+  // only by which venue it sits on; "" is its own answer, not either of them.
+  asset_type: string
   currency: Currency
   quantity: number
   cost_basis: number

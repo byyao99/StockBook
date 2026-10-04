@@ -7,6 +7,7 @@ import {
   formatBpsOrUnknown,
   formatCents,
   formatCentsOrUnknown,
+  formatPercentMagnitudeOrUnknown,
   formatPercentOrUnknown,
   formatSignedCents,
   formatSignedOrUnknown,
@@ -20,6 +21,8 @@ import {
   summaryReturnPct,
   unpricedCount,
 } from '../positionMath'
+import { byAssetType, byHolding, byMarket, topWeight } from '../allocation'
+import type { Allocation } from '../allocation'
 import PaginationBar from '../components/PaginationBar.vue'
 import SplitWarnings from '../components/SplitWarnings.vue'
 import type {
@@ -58,21 +61,49 @@ const refreshResults = ref<RefreshResult[]>([])
 // the figures on this very page are out by the ratio until the entries behind
 // them are restated.
 const splits = ref<UnadjustedSplit[]>([])
+// Every open holding, which is not the same as the page above. An allocation
+// computed from one page would claim weights over a partial book, and would be
+// most wrong exactly when it matters — a concentrated position sitting on page
+// two would simply not appear.
+const allOpen = ref<Position[]>([])
+// Which way the book is sliced. One control for every currency block: a reader
+// comparing two books wants them cut the same way, and a per-block setting
+// would let them drift apart without saying so.
+const allocationMode = ref<'holding' | 'market' | 'type'>('holding')
+
+/**
+ * Fetch every open holding by paging to the end.
+ *
+ * The list endpoint caps a page at 100, so a book larger than that would
+ * silently allocate over a prefix. Paging is a few requests at worst and is
+ * always right, which is the trade this system makes everywhere else.
+ */
+async function loadAllOpen(): Promise<Position[]> {
+  const items: Position[] = []
+  const pageSize = 100
+  for (;;) {
+    const page = await positionApi.list(pageSize, items.length, false)
+    items.push(...page.items)
+    if (items.length >= page.pagination.total || page.items.length === 0) return items
+  }
+}
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [page, totals, rates, unadjusted] = await Promise.all([
+    const [page, totals, rates, open, unadjusted] = await Promise.all([
       positionApi.list(PAGE_SIZE, offset.value, includeClosed.value),
       positionApi.summary(),
       reportApi.returns(),
+      loadAllOpen(),
       reportApi.splits(),
     ])
     positions.value = page.items
     total.value = page.pagination.total
     summaries.value = totals
     returns.value = rates
+    allOpen.value = open
     splits.value = unadjusted
     // If a filter change emptied the current page, step back one.
     if (positions.value.length === 0 && offset.value > 0) {
@@ -151,6 +182,74 @@ function weightOf(p: Position): number | null {
 function plClass(value: number | null): string {
   if (value === null) return 'muted'
   return value < 0 ? 'loss' : 'gain'
+}
+
+/**
+ * How each currency's book is divided up, keyed by currency.
+ *
+ * Per currency because there is no exchange rate here: a TWD holding's share of
+ * a book that also holds USD is not a number that exists. Unpriced holdings are
+ * excluded rather than counted as zero — a slice of 0% would claim a position
+ * is negligible when it may be the largest one — and the count comes back so
+ * the block can say what share of itself the picture accounts for.
+ *
+ * Computed once per currency rather than called from the template, which reads
+ * it five times per block.
+ */
+const allocations = computed(() => {
+  const slice = (held: Position[]) => {
+    switch (allocationMode.value) {
+      case 'market':
+        return byMarket(held)
+      case 'type':
+        return byAssetType(held)
+      default:
+        return byHolding(held)
+    }
+  }
+  const map = new Map<Currency, Allocation>()
+  for (const s of summaries.value) {
+    map.set(
+      s.currency,
+      slice(allOpen.value.filter((p) => p.currency === s.currency)),
+    )
+  }
+  return map
+})
+
+/** One currency's allocation, empty when nothing in it can be valued. */
+function allocationFor(currency: Currency): Allocation {
+  return allocations.value.get(currency) ?? { slices: [], total: 0, unpriced: 0 }
+}
+
+/**
+ * The combined weight of the three largest slices — "the top three are 62% of
+ * this book". Three because it is the smallest number that says something about
+ * a book rather than about one position, which the largest slice already does.
+ */
+function topThree(allocation: Allocation): number | null {
+  return topWeight(allocation, 3)
+}
+
+/**
+ * A deterministic colour per slice, walked round a fixed palette.
+ *
+ * The palette deliberately avoids the green and red this page uses for gains
+ * and losses: a wedge is a size, not a result, and colouring one red would say
+ * something about it that is not true.
+ */
+const SLICE_COLOURS = [
+  '#0d9488',
+  '#0ea5e9',
+  '#6366f1',
+  '#a855f7',
+  '#f59e0b',
+  '#64748b',
+  '#0891b2',
+  '#7c3aed',
+]
+function sliceColour(index: number): string {
+  return SLICE_COLOURS[index % SLICE_COLOURS.length]
 }
 
 const returnsByCurrency = computed(() => {
@@ -280,6 +379,63 @@ onMounted(async () => {
         {{ unpricedCount(s) === 1 ? 'its' : 'their' }} history out entirely — money paid in with
         no known value to show for it would read as a total loss. Try Refresh quotes above.
       </p>
+
+      <!-- Every other figure on this page is about profit. This one is about
+           risk, and it is the question a ledger can answer exactly while a
+           broker statement usually will not. -->
+      <div v-if="allocationFor(s.currency).slices.length > 0" class="allocation">
+        <div class="allocation-head">
+          <span class="allocation-title">
+            Allocation
+            <span class="muted">
+              · top 3 is {{ formatPercentMagnitudeOrUnknown(topThree(allocationFor(s.currency))) }}
+            </span>
+          </span>
+          <div class="modes">
+            <button
+              v-for="m in [
+                { key: 'holding', label: 'By holding' },
+                { key: 'market', label: 'By market' },
+                { key: 'type', label: 'By type' },
+              ]"
+              :key="m.key"
+              class="mode"
+              :class="{ active: allocationMode === m.key }"
+              @click="allocationMode = m.key as typeof allocationMode"
+            >
+              {{ m.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="bar">
+          <span
+            v-for="(slice, i) in allocationFor(s.currency).slices"
+            :key="slice.key"
+            class="bar-slice"
+            :style="{ width: `${slice.weight * 100}%`, background: sliceColour(i) }"
+            :title="`${slice.label} ${formatPercentMagnitudeOrUnknown(slice.weight)}`"
+          />
+        </div>
+
+        <ul class="legend">
+          <li v-for="(slice, i) in allocationFor(s.currency).slices" :key="slice.key">
+            <span class="swatch" :style="{ background: sliceColour(i) }" />
+            <span class="legend-label">{{ slice.label }}</span>
+            <span class="legend-weight">{{ formatPercentMagnitudeOrUnknown(slice.weight) }}</span>
+            <span class="muted legend-value">{{ formatCents(slice.value, s.currency) }}</span>
+          </li>
+        </ul>
+
+        <!-- The same rule the weight column follows: an unpriced holding is
+             left out rather than drawn as a sliver, because its value is
+             unknown and could be the largest position here. -->
+        <p v-if="allocationFor(s.currency).unpriced > 0" class="muted allocation-note">
+          {{ allocationFor(s.currency).unpriced }}
+          {{ allocationFor(s.currency).unpriced === 1 ? 'holding is' : 'holdings are' }}
+          not in this picture for want of a quote.
+        </p>
+      </div>
     </section>
 
     <section class="card">
@@ -341,7 +497,7 @@ onMounted(async () => {
               <!-- Share of this holding's own currency book. There is no
                    exchange rate here, so a weight across currencies is not a
                    number that exists. -->
-              <td class="num">{{ formatPercentOrUnknown(weightOf(p)) }}</td>
+              <td class="num">{{ formatPercentMagnitudeOrUnknown(weightOf(p)) }}</td>
               <td class="num" :class="plClass(p.unrealized_pl)">
                 {{ formatSignedOrUnknown(p.unrealized_pl, p.currency) }}
               </td>
@@ -471,6 +627,102 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+.allocation {
+  background: #fff;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-top: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.allocation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.allocation-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+}
+.allocation-title .muted {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.modes {
+  display: flex;
+  gap: 4px;
+}
+.mode {
+  width: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: #f1f5f9;
+  color: #475569;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.mode.active {
+  background: #0f172a;
+  color: #fff;
+}
+/* One bar rather than a pie: a length is read accurately and an angle is not,
+   and the whole point of this is comparing one wedge against another. */
+.bar {
+  display: flex;
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: #f1f5f9;
+}
+.bar-slice {
+  height: 100%;
+  min-width: 1px;
+}
+.legend {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 2px 16px;
+  font-size: 13px;
+}
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.legend-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.legend-weight {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.legend-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+.allocation-note {
+  margin: 8px 0 0;
+  font-size: 12px;
 }
 .toggle {
   display: flex;

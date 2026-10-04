@@ -106,6 +106,19 @@ export function formatCompactCents(cents: number, currency?: Currency): string {
 }
 
 /**
+ * Format a fraction that has a size but no direction, e.g. 0.6234 -> "62.34%".
+ *
+ * A portfolio weight is the case this exists for. It only ever measures how
+ * much of something there is, so the signed formatter would print a holding
+ * that is 72% of the book as "+72.77%" — which sits in a table beside real
+ * gains and losses rendered the same way, and reads as one of them. It is the
+ * same distinction the drawdown formatter below draws, at a different scale.
+ */
+export function formatPercentMagnitudeOrUnknown(fraction: number | null): string {
+  return fraction === null ? UNKNOWN : `${(Math.abs(fraction) * 100).toFixed(2)}%`
+}
+
+/**
  * Format a basis-point figure that has a size but no direction, e.g. 1599 ->
  * "15.99%".
  *

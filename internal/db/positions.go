@@ -18,11 +18,17 @@ import (
 // instrument has no quote — an unknown market value is reported as unknown
 // rather than quietly as zero.
 type PositionView struct {
-	ID             string          `json:"id"`
-	InstrumentID   string          `json:"instrument_id"`
-	Symbol         string          `json:"symbol"`
-	Name           string          `json:"name"`
-	Market         string          `json:"market"`
+	ID           string `json:"id"`
+	InstrumentID string `json:"instrument_id"`
+	Symbol       string `json:"symbol"`
+	Name         string `json:"name"`
+	Market       string `json:"market"`
+	// AssetType is the provider's own word for what this is ("EQUITY", "ETF"),
+	// or empty when it never said. It is carried here so a book can be sliced
+	// by what it holds rather than only by which venue it sits on — an
+	// ETF-heavy book and a stock-picking one are different books on the same
+	// market. Empty is its own answer and must not be read as either.
+	AssetType      string          `json:"asset_type"`
 	Currency       models.Currency `json:"currency"`
 	Quantity       int64           `json:"quantity"`
 	CostBasis      int64           `json:"cost_basis"`
@@ -83,6 +89,7 @@ type positionRow struct {
 	Symbol         string
 	Name           string
 	Market         string
+	AssetType      string
 	Currency       models.Currency
 	Quantity       int64
 	CostBasis      int64
@@ -101,6 +108,7 @@ const positionSelect = `positions.id AS id,
 	instruments.symbol AS symbol,
 	instruments.name AS name,
 	instruments.market AS market,
+	instruments.asset_type AS asset_type,
 	instruments.currency AS currency,
 	instruments.last_price AS last_price,
 	instruments.price_updated_at AS price_updated_at`
@@ -141,6 +149,7 @@ func (r positionRow) toView() PositionView {
 		Symbol:         r.Symbol,
 		Name:           r.Name,
 		Market:         r.Market,
+		AssetType:      r.AssetType,
 		Currency:       r.Currency,
 		Quantity:       r.Quantity,
 		CostBasis:      r.CostBasis,

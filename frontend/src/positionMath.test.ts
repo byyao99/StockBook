@@ -20,6 +20,7 @@ function position(overrides: Partial<Position> = {}): Position {
     symbol: '2330',
     name: 'TSMC',
     market: 'TWSE',
+    asset_type: 'EQUITY',
     currency: 'TWD',
     // Quantity is in scaled units on the wire; these tests speak whole shares.
     quantity: fromShares(100),

@@ -7,6 +7,7 @@ import {
   formatCentsOrUnknown,
   formatCompactCents,
   formatPercent,
+  formatPercentMagnitudeOrUnknown,
   formatPercentOrUnknown,
   bpsToListPercent,
   formatPpmPercent,
@@ -202,5 +203,19 @@ describe('broker discount as a percentage of list', () => {
   it('formats a fractional effective rate', () => {
     expect(formatPpmPercent(470.25)).toBe('0.047025%')
     expect(formatPpmPercent(399)).toBe('0.0399%')
+  })
+})
+
+describe('formatPercentMagnitudeOrUnknown', () => {
+  // A weight only ever measures how much of something there is. The signed
+  // formatter prints 72% of a book as "+72.77%", which sits in a table beside
+  // real gains rendered the same way and reads as one of them.
+  it('prints a weight without a sign', () => {
+    expect(formatPercentMagnitudeOrUnknown(0.7277)).toBe('72.77%')
+    expect(formatPercentMagnitudeOrUnknown(1)).toBe('100.00%')
+  })
+
+  it('reports an unmeasurable weight as unknown, not as none', () => {
+    expect(formatPercentMagnitudeOrUnknown(null)).toBe('—')
   })
 })
