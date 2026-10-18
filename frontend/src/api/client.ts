@@ -22,6 +22,7 @@ import type {
   Position,
   RealizedSummary,
   RecurringPlan,
+  RecurringPlanChange,
   RecurringPlanInput,
   RefreshReport,
   ResearchSyncReport,
@@ -371,6 +372,11 @@ export const planApi = {
 
   create: (input: RecurringPlanInput) =>
     request<RecurringPlan>('/plans', { method: 'POST', body: JSON.stringify(input) }),
+
+  // Corrects the days, amount or start date in place. Instalments not yet
+  // recorded follow the new terms; recorded purchases are untouched.
+  update: (id: string, change: RecurringPlanChange) =>
+    request<RecurringPlan>(`/plans/${id}`, { method: 'PUT', body: JSON.stringify(change) }),
 
   // Ending keeps the plan. The purchases it prompted are still in the ledger,
   // and it is the only record of why they are spaced as they are.

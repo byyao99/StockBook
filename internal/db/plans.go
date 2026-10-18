@@ -21,6 +21,25 @@ import (
 // allows is three a month, which is ten days apart.
 const purchaseClaimWindow = 10 * 24 * time.Hour
 
+// ErrPlanStartsAfterEnd is returned when an edit would start a stopped plan
+// after the day it stopped, leaving a plan that never ran at all.
+var ErrPlanStartsAfterEnd = errors.New("a stopped plan cannot start after the day it stopped")
+
+// PlanChange is what an edit may change about a plan: its terms, never what it
+// buys.
+//
+// The instrument is left out on purpose. A plan's instalments are matched to
+// buys of its instrument, so pointing an existing plan at another one would
+// orphan every purchase it already explained and raise a prompt for every date
+// it has run — a different plan wearing this one's id. That is a delete and a
+// new plan, the same way an instrument's own symbol and market are identity
+// and only its name is editable.
+type PlanChange struct {
+	DaysOfMonth string
+	Amount      int64
+	StartedOn   string
+}
+
 // PlanView is a plan joined with the instrument it buys.
 type PlanView struct {
 	models.RecurringPlan
@@ -149,6 +168,49 @@ func (d *DB) ListPlans(userID string) ([]PlanView, error) {
 // CreatePlan stores a new savings plan.
 func (d *DB) CreatePlan(plan models.RecurringPlan) (models.RecurringPlan, error) {
 	if err := d.db.Create(&plan).Error; err != nil {
+		return models.RecurringPlan{}, err
+	}
+	return plan, nil
+}
+
+// UpdatePlan changes the terms of one of userID's plans in place, returning
+// it as stored.
+//
+// It is a correction, and it is retroactive: every instalment the plan has
+// come due for is recomputed from the new terms, because nothing about a plan
+// is stored per instalment. That costs nothing for the ones already recorded —
+// a buy answers an instalment by instrument and date, never by amount, and the
+// ledger entry is the record of what executed — so what moves is only the
+// prompts still waiting, which is exactly what a corrected typo should move.
+func (d *DB) UpdatePlan(userID, id string, change PlanChange) (models.RecurringPlan, error) {
+	var plan models.RecurringPlan
+	err := d.db.Transaction(func(tx *gorm.DB) error {
+		err := tx.Where("id = ? AND user_id = ?", id, userID).First(&plan).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		// Dates are YYYY-MM-DD, so the string comparison is the chronological one.
+		if plan.EndedOn != "" && change.StartedOn > plan.EndedOn {
+			return ErrPlanStartsAfterEnd
+		}
+		err = tx.Model(&models.RecurringPlan{}).
+			Where("id = ? AND user_id = ?", id, userID).
+			Updates(map[string]any{
+				"days_of_month": change.DaysOfMonth,
+				"amount":        change.Amount,
+				"started_on":    change.StartedOn,
+			}).Error
+		if err != nil {
+			return err
+		}
+		// Read back rather than patching the copy in hand, so what is returned
+		// is what is stored — updated_at included.
+		return tx.Where("id = ? AND user_id = ?", id, userID).First(&plan).Error
+	})
+	if err != nil {
 		return models.RecurringPlan{}, err
 	}
 	return plan, nil

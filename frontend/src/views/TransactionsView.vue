@@ -27,6 +27,7 @@ import {
 } from '../feeMath'
 import PaginationBar from '../components/PaginationBar.vue'
 import InstrumentPicker from '../components/InstrumentPicker.vue'
+import SavingsPlans from '../components/SavingsPlans.vue'
 import { FEE_PROFILE_KEYS, SIDES } from '../types'
 import type {
   Currency,
@@ -761,6 +762,13 @@ onMounted(async () => {
 
       <PaginationBar :limit="PAGE_SIZE" :offset="offset" :total="total" @change="changePage" />
     </section>
+
+    <!-- The terms behind the "Plan purchases not recorded" prompts at the top.
+         Last on the page because they are set once and rarely touched, but on
+         this page because a missing or wrong instalment is noticed here, and
+         the plan that raised it should be one scroll away rather than a page
+         away. Any change re-reads the prompts. -->
+    <SavingsPlans :instruments="instruments" @changed="load" />
   </div>
 </template>
 

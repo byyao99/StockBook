@@ -103,6 +103,10 @@ func respondDBError(c *gin.Context, err error) {
 		})
 		return
 	}
+	if errors.Is(err, db.ErrPlanStartsAfterEnd) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
 	if errors.Is(err, db.ErrBenchmarkCurrency) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return

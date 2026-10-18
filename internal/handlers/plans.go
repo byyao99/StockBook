@@ -36,6 +36,14 @@ type createPlanRequest struct {
 	StartedOn    string `json:"started_on" binding:"required"`
 }
 
+// updatePlanRequest is an edit to a plan's terms. The instrument is not among
+// them: see db.PlanChange.
+type updatePlanRequest struct {
+	DaysOfMonth string `json:"days_of_month" binding:"required"`
+	Amount      int64  `json:"amount" binding:"required,gt=0"`
+	StartedOn   string `json:"started_on" binding:"required"`
+}
+
 // List handles GET /api/v1/plans.
 func (h *PlanHandler) List(c *gin.Context) {
 	plans, err := h.db.ListPlans(callerID(c))
@@ -82,6 +90,37 @@ func (h *PlanHandler) Create(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": plan})
+}
+
+// Update handles PUT /api/v1/plans/:id: correct a plan's days, amount or start
+// date in place. The instrument is fixed for the life of the plan.
+func (h *PlanHandler) Update(c *gin.Context) {
+	var req updatePlanRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	days, err := db.ParsePlanDays(req.DaysOfMonth)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := time.Parse(time.DateOnly, req.StartedOn); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "started_on must be YYYY-MM-DD"})
+		return
+	}
+
+	plan, err := h.db.UpdatePlan(callerID(c), c.Param("id"), db.PlanChange{
+		// Canonical on the way in, exactly as on create.
+		DaysOfMonth: db.FormatPlanDays(days),
+		Amount:      req.Amount,
+		StartedOn:   req.StartedOn,
+	})
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": plan})
 }
 
 // End handles PUT /api/v1/plans/:id/end: stop a plan without erasing it.

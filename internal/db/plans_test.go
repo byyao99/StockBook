@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -264,5 +265,105 @@ func TestHistoryReachesBackToWhicheverCameFirst(t *testing.T) {
 	want := day(2).UTC().Format(time.DateOnly)
 	if needed != want {
 		t.Errorf("history needed from %q, want the first trade %q", needed, want)
+	}
+}
+
+// An edit is a correction and recomputes every instalment from the new terms,
+// but only the ones still waiting move: a recorded buy answers its instalment
+// by instrument and date, never by amount, so the ledger is untouched.
+func TestUpdatePlanCorrectsPromptsButNotWhatWasRecorded(t *testing.T) {
+	s := newTestDB(t)
+	user := seedUser(t, s, "saver")
+	inst := seedInstrument(t, s, "2330")
+	plan := seedPlan(t, s, user.ID, inst.ID, "5", 300_000, 0)
+	closesFrom(t, s, inst.ID, 0, 50_000)
+
+	before, err := s.PendingPurchases(user.ID, day(70))
+	if err != nil {
+		t.Fatalf("PendingPurchases: %v", err)
+	}
+	oldest := before[len(before)-1].DueOn
+	due, _ := time.Parse(time.DateOnly, oldest)
+	if _, err := s.CreateTransaction(models.Transaction{
+		ID: uuid.NewString(), UserID: user.ID, InstrumentID: inst.ID,
+		Side: models.SideBuy, Quantity: shares(6), Price: 50_000,
+		TradedAt: due.AddDate(0, 0, 1),
+	}); err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+
+	updated, err := s.UpdatePlan(user.ID, plan.ID, PlanChange{
+		DaysOfMonth: "5", Amount: 500_000, StartedOn: plan.StartedOn,
+	})
+	if err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+	if updated.Amount != 500_000 || updated.InstrumentID != inst.ID {
+		t.Errorf("updated plan %+v, want amount 500000 on the same instrument", updated)
+	}
+
+	after, err := s.PendingPurchases(user.ID, day(70))
+	if err != nil {
+		t.Fatalf("PendingPurchases: %v", err)
+	}
+	if len(after) != len(before)-1 {
+		t.Fatalf("got %d pending after the edit, want %d — the recorded one must stay answered",
+			len(after), len(before)-1)
+	}
+	for _, p := range after {
+		if p.DueOn == oldest {
+			t.Errorf("the recorded instalment %s came back as pending", oldest)
+		}
+		if p.Amount != 500_000 {
+			t.Errorf("instalment %s still asks for %d, want the corrected 500000", p.DueOn, p.Amount)
+		}
+	}
+}
+
+// A stopped plan cannot be moved to start after it stopped: that is a plan
+// that never ran, and nothing would say so.
+func TestUpdatePlanRefusesAStartAfterItsEnd(t *testing.T) {
+	s := newTestDB(t)
+	user := seedUser(t, s, "saver")
+	inst := seedInstrument(t, s, "2330")
+	plan := seedPlan(t, s, user.ID, inst.ID, "5", 300_000, 0)
+	if err := s.EndPlan(user.ID, plan.ID, day(30).UTC().Format(time.DateOnly)); err != nil {
+		t.Fatalf("EndPlan: %v", err)
+	}
+
+	_, err := s.UpdatePlan(user.ID, plan.ID, PlanChange{
+		DaysOfMonth: "5", Amount: 300_000, StartedOn: day(31).UTC().Format(time.DateOnly),
+	})
+	if !errors.Is(err, ErrPlanStartsAfterEnd) {
+		t.Fatalf("got %v, want ErrPlanStartsAfterEnd", err)
+	}
+	// Starting on the day it stopped is a plan that ran once, and is allowed.
+	if _, err := s.UpdatePlan(user.ID, plan.ID, PlanChange{
+		DaysOfMonth: "5", Amount: 300_000, StartedOn: day(30).UTC().Format(time.DateOnly),
+	}); err != nil {
+		t.Errorf("starting on the stop date: %v", err)
+	}
+}
+
+// Another book's plan is not found rather than editable by id alone.
+func TestUpdatePlanIsScopedToItsOwner(t *testing.T) {
+	s := newTestDB(t)
+	mine := seedUser(t, s, "mine")
+	theirs := seedUser(t, s, "theirs")
+	inst := seedInstrument(t, s, "2330")
+	plan := seedPlan(t, s, theirs.ID, inst.ID, "5", 300_000, 0)
+
+	_, err := s.UpdatePlan(mine.ID, plan.ID, PlanChange{
+		DaysOfMonth: "5", Amount: 1, StartedOn: plan.StartedOn,
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+	plans, err := s.ListPlans(theirs.ID)
+	if err != nil {
+		t.Fatalf("ListPlans: %v", err)
+	}
+	if plans[0].Amount != 300_000 {
+		t.Errorf("another user's edit changed the amount to %d", plans[0].Amount)
 	}
 }

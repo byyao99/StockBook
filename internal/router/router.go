@@ -176,14 +176,14 @@ func New(s *db.DB, am *auth.Manager, log *slog.Logger, provider handlers.QuotePr
 		}
 
 		// A savings plan is configuration, not ledger — it says what is
-		// supposed to happen and never that it did — so it sits with the
-		// caller's own settings and is scoped to them like everything else
-		// derived from a book.
+		// supposed to happen and never that it did — and is scoped to the
+		// caller like everything else derived from a book.
 		pl := v1.Group("/plans", middleware.RequireAuth(am, s))
 		{
 			pl.GET("", plan.List)
 			pl.POST("", plan.Create)
 			pl.GET("/pending", plan.Pending)
+			pl.PUT("/:id", plan.Update)
 			pl.PUT("/:id/end", plan.End)
 			pl.DELETE("/:id", plan.Delete)
 		}

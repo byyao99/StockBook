@@ -134,7 +134,12 @@ func TestPlansDoNotLeakBetweenBooks(t *testing.T) {
 	if len(plans) != 0 {
 		t.Errorf("saw another book's plan: %+v", plans)
 	}
-	// Nor can it be ended or deleted by id alone.
+	// Nor can it be edited or deleted by id alone.
+	if rec := e.do(t, http.MethodPut, "/api/v1/plans/"+plan["id"].(string), map[string]any{
+		"days_of_month": "5", "amount": 1, "started_on": "2026-01-01",
+	}, mine); rec.Code != http.StatusNotFound {
+		t.Errorf("editing another book's plan: %d, want 404", rec.Code)
+	}
 	if rec := e.do(t, http.MethodDelete, "/api/v1/plans/"+plan["id"].(string), nil, mine); rec.Code != http.StatusNotFound {
 		t.Errorf("deleting another book's plan: %d, want 404", rec.Code)
 	}
@@ -146,5 +151,78 @@ func TestPlanEndpointsRequireAuth(t *testing.T) {
 		if rec := e.do(t, http.MethodGet, path, nil, ""); rec.Code != http.StatusUnauthorized {
 			t.Errorf("GET %s without a token: %d, want 401", path, rec.Code)
 		}
+	}
+}
+
+// An edit changes the terms in place and stores the schedule canonically,
+// exactly as create does. The instrument is not among what it can change.
+func TestUpdatingAPlanChangesItsTerms(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "saver", models.RoleUser)
+	inst := e.seedInstrument(t, "2330", nil)
+	other := e.seedInstrument(t, "0050", nil)
+	plan := e.createPlan(t, token, inst.ID, "5", 300000, "2026-01-01")
+
+	rec := e.do(t, http.MethodPut, "/api/v1/plans/"+plan["id"].(string), map[string]any{
+		"instrument_id": other.ID, // ignored: a plan's instrument is fixed
+		"days_of_month": "20, 10",
+		"amount":        500000,
+		"started_on":    "2026-02-01",
+	}, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update: %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var updated map[string]any
+	decodeData(t, rec, &updated)
+	if updated["days_of_month"] != "10,20" {
+		t.Errorf("days_of_month = %v, want \"10,20\"", updated["days_of_month"])
+	}
+	if updated["amount"] != float64(500000) || updated["started_on"] != "2026-02-01" {
+		t.Errorf("terms not applied: %+v", updated)
+	}
+	if updated["instrument_id"] != inst.ID {
+		t.Errorf("instrument changed to %v, want it fixed at %s", updated["instrument_id"], inst.ID)
+	}
+	// What comes back is what is stored, not the request echoed onto the old row.
+	if updated["updated_at"] == plan["updated_at"] {
+		t.Errorf("updated_at still %v after an edit", updated["updated_at"])
+	}
+}
+
+func TestUpdatingAPlanValidatesLikeCreate(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "saver", models.RoleUser)
+	inst := e.seedInstrument(t, "2330", nil)
+	plan := e.createPlan(t, token, inst.ID, "5", 300000, "2026-01-01")
+	path := "/api/v1/plans/" + plan["id"].(string)
+
+	for name, body := range map[string]map[string]any{
+		"impossible day": {"days_of_month": "32", "amount": 300000, "started_on": "2026-01-01"},
+		"zero amount":    {"days_of_month": "5", "amount": 0, "started_on": "2026-01-01"},
+		"bad date":       {"days_of_month": "5", "amount": 300000, "started_on": "Jan 1"},
+	} {
+		if rec := e.do(t, http.MethodPut, path, body, token); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: got %d, want 400", name, rec.Code)
+		}
+	}
+}
+
+// A stopped plan moved to start after it stopped would be a plan that never
+// ran; that conflicts with what is stored rather than with the request alone.
+func TestUpdatingAStoppedPlanCannotStartAfterItStopped(t *testing.T) {
+	e := setup(t)
+	token := e.token(t, "saver", models.RoleUser)
+	inst := e.seedInstrument(t, "2330", nil)
+	plan := e.createPlan(t, token, inst.ID, "5", 300000, "2026-01-01")
+	id := plan["id"].(string)
+	if rec := e.do(t, http.MethodPut, "/api/v1/plans/"+id+"/end?on=2026-02-01", nil, token); rec.Code != http.StatusNoContent {
+		t.Fatalf("end: %d", rec.Code)
+	}
+
+	rec := e.do(t, http.MethodPut, "/api/v1/plans/"+id, map[string]any{
+		"days_of_month": "5", "amount": 300000, "started_on": "2026-03-01",
+	}, token)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("got %d, want 409 (body: %s)", rec.Code, rec.Body.String())
 	}
 }

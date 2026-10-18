@@ -686,6 +686,12 @@ export interface RecurringPlanInput {
 }
 
 /**
+ * What an edit sends. The instrument is not among it: a plan's instalments are
+ * matched to buys of its instrument, so changing that is a different plan.
+ */
+export type RecurringPlanChange = Omit<RecurringPlanInput, 'instrument_id'>
+
+/**
  * An instalment that came due with no purchase recorded against it.
  *
  * `estimated_price` and `estimated_shares` come from the stored close on the
