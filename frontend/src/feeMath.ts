@@ -127,6 +127,15 @@ export function estimateFee(
   // a different charge with different rates from a brokerage commission, and
   // applying one to the other would produce a plausible-looking wrong number.
   if (side === 'dividend') return null
+  // A charge that does not scale with the trade is known before the trade's
+  // size is. A flat fee is stored as a zero rate with the amount in the floor,
+  // so with nothing proportional left — no rate, and no sell tax unless this is
+  // a buy — the floor is the whole answer at every size. That matters for a
+  // savings-plan instalment recorded before its fill is known: the shares and
+  // price are blank, but the US$0.10 it costs is not in doubt.
+  if (profile.rate_ppm === 0 && (side === 'buy' || profile.sell_tax_ppm === 0)) {
+    return profile.min_fee
+  }
   if (!Number.isFinite(quantity) || !Number.isFinite(priceCents)) return null
   if (quantity <= 0 || priceCents <= 0) return null
 

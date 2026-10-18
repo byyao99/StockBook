@@ -80,6 +80,20 @@ const visiblePurchases = computed(() =>
 // The form, so recording a prompted dividend can bring it into view.
 const formSection = ref<HTMLElement | null>(null)
 
+// Instalments with no stored close on their due date, which have nothing to
+// estimate the shares or price from. The usual cause is a plan whose instrument
+// has never had its history synced, so Record fetches it first — see
+// recordPurchase.
+const unestimatedPurchases = computed(
+  () => pendingPurchases.value.filter((p) => p.estimated_price === null).length,
+)
+// The instalment whose price is being fetched, so only its button says so.
+const fetchingFor = ref('')
+
+function purchaseKey(p: PendingPurchase): string {
+  return `${p.plan_id}|${p.due_on}`
+}
+
 /**
  * Whether the user has typed into the price or fee field themselves.
  *
@@ -418,6 +432,32 @@ async function recordDividend(pending: PendingDividend) {
 // Nothing is saved: the estimate is the day's close, and the fill happened at
 // whatever the market actually did that morning.
 async function recordPurchase(pending: PendingPurchase) {
+  // With no close stored for the due date there is nothing to estimate from,
+  // and the form would arrive with its shares and price blank — which reads as
+  // Record having done nothing. Pressing Record is the reader asking for the
+  // form to be filled, so it is also the moment to fetch the price that fills
+  // it: the history sync covers a plan's whole span, and the prompt is re-read
+  // so the estimate comes from the server's own arithmetic, not a second copy
+  // of it here. A failed fetch still fills what is known and says why the rest
+  // is blank.
+  if (pending.estimated_price === null) {
+    const key = purchaseKey(pending)
+    fetchingFor.value = key
+    error.value = ''
+    try {
+      await instrumentApi.syncHistory()
+      pendingPurchases.value = await planApi.pending()
+      pending = pendingPurchases.value.find((p) => purchaseKey(p) === key) ?? pending
+      if (pending.estimated_price === null) {
+        error.value = `The provider has no ${pending.symbol} close for ${pending.due_on} — enter the shares and price from your statement.`
+      }
+    } catch (e) {
+      error.value = `Could not fetch the ${pending.symbol} price for ${pending.due_on} (${(e as Error).message}) — enter the shares and price from your statement.`
+    } finally {
+      fetchingFor.value = ''
+    }
+  }
+
   resetForm()
   form.instrumentId = pending.instrument_id
   await nextTick()
@@ -520,6 +560,11 @@ onMounted(async () => {
         them. Shares and price are estimated from that day's close — the real
         fill is on your statement.
       </p>
+      <p v-if="unestimatedPurchases > 0" class="notice">
+        {{ unestimatedPurchases }}
+        {{ unestimatedPurchases === 1 ? 'has' : 'have' }} no stored price yet —
+        Record fetches that day's price first, which takes a few seconds.
+      </p>
       <ul class="pending-list">
         <li v-for="p in visiblePurchases" :key="p.plan_id + p.due_on">
           <strong>{{ p.symbol }}</strong>
@@ -536,7 +581,13 @@ onMounted(async () => {
             }}
           </span>
           <strong class="num">{{ formatCents(p.amount, p.currency) }}</strong>
-          <button class="btn-secondary" @click="recordPurchase(p)">Record</button>
+          <button
+            class="btn-secondary"
+            :disabled="fetchingFor !== ''"
+            @click="recordPurchase(p)"
+          >
+            {{ fetchingFor === purchaseKey(p) ? 'Fetching price…' : 'Record' }}
+          </button>
         </li>
       </ul>
       <button

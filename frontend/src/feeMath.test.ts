@@ -214,6 +214,24 @@ describe('a fixed charge per trade', () => {
     expect(estimateFee(flatRecurring, 'buy', 3, 45000)).toBe(10)
   })
 
+  // The charge does not depend on the size, so it is known before the size is
+  // — an instalment recorded with its shares and price still blank costs the
+  // same US$0.10 it always does.
+  it('is known before the trade size is', () => {
+    expect(estimateFee(flatRecurring, 'buy', 0, 0)).toBe(10)
+    expect(estimateFee(flatETF, 'sell', 0, 0)).toBe(300)
+  })
+
+  // A sell tax scales with the proceeds, so a flat commission plus a tax is
+  // not knowable without the size, however fixed the commission is.
+  it('still needs the size when a sell tax applies', () => {
+    const flatWithTax: FeeProfile = {
+      key: 'tw_etf', rate_ppm: 0, min_fee: 2000, sell_tax_ppm: 1000, discount_bps: 0,
+    }
+    expect(estimateFee(flatWithTax, 'sell', 0, 0)).toBeNull()
+    expect(estimateFee(flatWithTax, 'buy', 0, 0)).toBe(2000)
+  })
+
   it('is recognised as a fixed charge rather than a 0% rate', () => {
     expect(chargeMode(flatETF)).toBe('flat')
     expect(chargeMode(flatRecurring)).toBe('flat')

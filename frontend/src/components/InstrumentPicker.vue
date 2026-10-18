@@ -76,6 +76,19 @@ watch(query, (q) => {
 
 onBeforeUnmount(() => clearTimeout(debounce))
 
+// A value set from outside — the Ledger page filling the form in from a
+// prompted dividend or plan purchase — collapses the search exactly as a pick
+// does. Without this, a search box the reader had focused stayed open over the
+// instrument that had just been chosen for them, and the form read as though
+// nothing had been filled in. Clearing to '' is left alone: that is "change",
+// which opens the search on purpose.
+watch(
+  () => props.modelValue,
+  (id) => {
+    if (id) close()
+  },
+)
+
 async function searchProvider(q: string) {
   searching.value = true
   try {
