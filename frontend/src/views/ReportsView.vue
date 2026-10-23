@@ -655,7 +655,7 @@ onMounted(async () => {
                   <div class="muted">{{ row.name }}</div>
                 </td>
                 <td class="num">{{ formatQty(row.sells) }}</td>
-                <td class="num">{{ formatQty(row.shares_sold) }}</td>
+                <td class="num">{{ formatShares(row.shares_sold) }}</td>
                 <td class="num">{{ formatCents(row.proceeds, row.currency) }}</td>
                 <td class="num">{{ formatCents(row.last_price, row.currency) }}</td>
                 <td class="num">{{ formatCents(row.value_if_held, row.currency) }}</td>
@@ -665,7 +665,7 @@ onMounted(async () => {
                 <!-- Shares still held mean the position was re-entered, so the
                      difference beside it was never actually given up. -->
                 <td class="num" :class="row.shares_held === 0 ? 'muted' : ''">
-                  {{ row.shares_held === 0 ? UNKNOWN : formatQty(row.shares_held) }}
+                  {{ row.shares_held === 0 ? UNKNOWN : formatShares(row.shares_held) }}
                 </td>
               </tr>
             </tbody>
