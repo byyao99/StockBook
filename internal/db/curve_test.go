@@ -292,3 +292,36 @@ func TestCurveFoldsANonTradingDayIntoTheNextSession(t *testing.T) {
 		t.Errorf("net invested %d, want 2000000", last.NetInvested)
 	}
 }
+
+// The curve's annual rate follows the same minimum span as the money-weighted
+// one beside it, so the two appear and disappear together. The return over the
+// window itself is always reported.
+func TestCurveAnnualizesOnlyAYearOrMore(t *testing.T) {
+	s := newTestDB(t)
+	user := seedUser(t, s, "curver")
+	inst := seedInstrument(t, s, "2330")
+
+	mustRecord(t, s, user.ID, inst.ID, entry{models.SideBuy, 100, 10_000, 0, 0})
+	closesFrom(t, s, inst.ID, 0, 10_000)
+	closesFrom(t, s, inst.ID, 100, 11_000)
+
+	short := mustCurve(t, s, user.ID)
+	if short.AnnualizedBps != nil {
+		t.Errorf("annualized %d bps over 100 days, want none", *short.AnnualizedBps)
+	}
+	if short.AnnualizedUnavailable != shortSpanReason {
+		t.Errorf("annualized_unavailable %q, want the short-span reason", short.AnnualizedUnavailable)
+	}
+	if short.TWRBps == nil || *short.TWRBps != 1000 {
+		t.Errorf("TWR %v, want 1000 bps whatever the span", short.TWRBps)
+	}
+
+	closesFrom(t, s, inst.ID, 365, 12_100)
+	long := mustCurve(t, s, user.ID)
+	if long.AnnualizedBps == nil {
+		t.Fatalf("no annual rate over a year: %q", long.AnnualizedUnavailable)
+	}
+	if long.AnnualizedUnavailable != "" {
+		t.Errorf("annualized_unavailable %q alongside a rate", long.AnnualizedUnavailable)
+	}
+}

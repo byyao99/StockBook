@@ -194,3 +194,27 @@ func mustReturns(t *testing.T, s *DB, userID string, asOf time.Time) []ReturnsSu
 	}
 	return summaries
 }
+
+// A book a few months old has no annual rate. Its money-weighted figure would
+// compound a short run into a yearly one, which is how a three-month-old book
+// read +49.6% a year on Holdings while Reports said −15% for the same months.
+func TestReturnsUnderAYearHasNoAnnualRate(t *testing.T) {
+	s := newTestDB(t)
+	user := seedUser(t, s, "new")
+	inst := seedInstrument(t, s, "2330")
+
+	mustRecord(t, s, user.ID, inst.ID, entry{models.SideBuy, 100, 10_000, 0, 0})
+	priceAt(t, s, inst.ID, 12_000)
+
+	summary := only(t, mustReturns(t, s, user.ID, day(100)))
+	if summary.XIRRBps != nil {
+		t.Errorf("rate %d bps after 100 days, want none", *summary.XIRRBps)
+	}
+	if summary.Unavailable != shortSpanReason {
+		t.Errorf("unavailable %q, want the short-span reason", summary.Unavailable)
+	}
+	// What happened is still reported; only the yearly extrapolation is not.
+	if summary.NetGain != 200_000 {
+		t.Errorf("net gain %d, want 200000", summary.NetGain)
+	}
+}

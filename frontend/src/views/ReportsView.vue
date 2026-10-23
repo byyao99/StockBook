@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { instrumentApi, reportApi, settingsApi } from '../api/client'
+import { claimAutoRun } from '../autoRefresh'
+import { historyLag, isStale } from '../historyLag'
 import {
   UNKNOWN,
   formatBpsMagnitudeOrUnknown,
@@ -112,9 +114,44 @@ async function load() {
     periodReturns.value = rates
   } catch (e) {
     error.value = (e as Error).message
+    return
   } finally {
     loading.value = false
   }
+  await syncIfStale()
+}
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+/** The last stored session a currency's curve reaches. */
+function lastSessionOf(c: CurrencyCurve): string | undefined {
+  return c.points.at(-1)?.date
+}
+
+/** Days the curve trails the period it should cover — see historyLag.ts. */
+function lagOf(c: CurrencyCurve): number | null {
+  return historyLag(lastSessionOf(c), to.value, today())
+}
+
+/** What the lag is measured to, in words, for the notice. */
+function lagReference(): string {
+  return to.value && to.value < today() ? `the end of ${periodLabel.value}` : 'today'
+}
+
+/**
+ * Tops the price history up when the curve has fallen behind, so the figures on
+ * this page are not silently a week old. Unlike the quote refresh on Holdings,
+ * the history sync has no server-side freshness window — every run asks the
+ * provider once per instrument — so it runs only when the lag says sessions are
+ * missing, and at most once per half hour in a tab. If it fails or the provider
+ * has nothing newer, the notice in each block stays and says so.
+ */
+async function syncIfStale() {
+  if (!curves.value.some((c) => isStale(lagOf(c)))) return
+  if (!claimAutoRun('history', 30 * 60_000)) return
+  await syncHistory({ automatic: true })
 }
 
 /**
@@ -175,10 +212,12 @@ async function loadBenchmarks() {
  * first run downloads years and is genuinely slow; later ones top up a few
  * sessions each.
  */
-async function syncHistory() {
+async function syncHistory({ automatic = false } = {}) {
   syncing.value = true
-  error.value = ''
-  success.value = ''
+  if (!automatic) {
+    error.value = ''
+    success.value = ''
+  }
   syncResults.value = []
   try {
     const report = await instrumentApi.syncHistory()
@@ -188,13 +227,20 @@ async function syncHistory() {
     syncResults.value = report.results.filter((r) => r.status === 'failed')
     const added = report.results.reduce((sum, r) => sum + r.added, 0)
     const instruments = `${report.synced} ${report.synced === 1 ? 'instrument' : 'instruments'}`
-    success.value = `Synced ${instruments}, ${added} ${added === 1 ? 'session' : 'sessions'} added.`
-    if (report.failed > 0) {
-      success.value += ` ${report.failed} could not be fetched — see below.`
+    // An automatic top-up announces nothing when it works: the chart reaching
+    // today is the confirmation, exactly as a quote refresh on arrival is quiet.
+    if (!automatic) {
+      success.value = `Synced ${instruments}, ${added} ${added === 1 ? 'session' : 'sessions'} added.`
+      if (report.failed > 0) {
+        success.value += ` ${report.failed} could not be fetched — see below.`
+      }
     }
     await load()
   } catch (e) {
-    error.value = (e as Error).message
+    // A failed automatic attempt (the provider down, the rate limit reached) is
+    // not an error the reader caused; the stale notice already says the
+    // figures stop early, which is the part that matters.
+    if (!automatic) error.value = (e as Error).message
   } finally {
     syncing.value = false
   }
@@ -312,7 +358,7 @@ onMounted(async () => {
     <section v-if="!loading" class="history">
       <div class="section-head">
         <h2 class="report-title">History</h2>
-        <button class="btn-secondary" :disabled="syncing" @click="syncHistory">
+        <button class="btn-secondary" :disabled="syncing" @click="syncHistory()">
           {{ syncing ? 'Syncing prices…' : 'Sync prices' }}
         </button>
       </div>
@@ -341,6 +387,15 @@ onMounted(async () => {
           {{ c.currency }}
           <span class="muted">· {{ periodLabel }} · {{ curveCounts(c) }}</span>
         </h3>
+
+        <!-- Said in words above the chart rather than left to the small
+             "latest" date inside it: every figure in this section is valued at
+             the last stored close, and a week-old one looks like any other. -->
+        <p v-if="isStale(lagOf(c))" class="notice">
+          Prices are stored up to {{ lastSessionOf(c) }}, {{ lagOf(c) }} days before
+          {{ lagReference() }}, so the chart and the figures below stop there.
+          {{ syncing ? 'Syncing prices now…' : 'Sync prices to bring them up to date.' }}
+        </p>
 
         <!-- The benchmark is chosen per currency, and on this page the currency
              is whichever block the control sits in — so unlike a settings page
@@ -390,7 +445,13 @@ onMounted(async () => {
               <strong class="stat-value" :class="plClass(c.annualized_bps ?? 0)">
                 {{ formatBpsOrUnknown(c.annualized_bps) }}
               </strong>
-              <span class="muted stat-note">the same return stated as a yearly rate</span>
+              <span class="muted stat-note">
+                {{
+                  c.annualized_bps === null
+                    ? (c.annualized_unavailable ?? 'not enough history to annualize')
+                    : 'the same return stated as a yearly rate'
+                }}
+              </span>
             </div>
             <div class="stat">
               <!-- A drawdown is a depth, not a movement: it is reported as a
@@ -450,7 +511,11 @@ onMounted(async () => {
               {{ formatBpsOrUnknown(r.xirr_bps) }}
             </strong>
             <span class="muted stat-note">
-              money-weighted, per year over this period
+              {{
+                r.xirr_bps === null
+                  ? (r.unavailable ?? 'not enough history to measure')
+                  : 'money-weighted, per year over this period'
+              }}
             </span>
           </div>
           <div class="stat">
@@ -476,9 +541,9 @@ onMounted(async () => {
         </div>
 
         <!-- A rate that could not be found is never rendered as 0%: a book that
-             cannot be measured has not broken even. -->
-        <p v-if="r.unavailable" class="notice">{{ r.unavailable }}</p>
-        <p v-else-if="r.without_history > 0" class="notice">
+             cannot be measured has not broken even. The reason is on the card
+             itself, so it is not repeated here. -->
+        <p v-if="r.without_history > 0" class="notice">
           {{ r.without_history }}
           {{ r.without_history === 1 ? 'holding is' : 'holdings are' }}
           left out of this rate for the same reason

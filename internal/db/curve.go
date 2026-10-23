@@ -60,13 +60,17 @@ type CurvePoint struct {
 // along with their value, on the same terms as the returns report — a holding
 // that cannot be valued must not be valued at zero.
 type CurrencyCurve struct {
-	Currency       models.Currency `json:"currency"`
-	Points         []CurvePoint    `json:"points"`
-	TWRBps         *int64          `json:"twr_bps"`
-	AnnualizedBps  *int64          `json:"annualized_bps"`
-	MaxDrawdownBps *int64          `json:"max_drawdown_bps"`
-	Instruments    int             `json:"instruments"`
-	WithoutHistory int             `json:"without_history"`
+	Currency      models.Currency `json:"currency"`
+	Points        []CurvePoint    `json:"points"`
+	TWRBps        *int64          `json:"twr_bps"`
+	AnnualizedBps *int64          `json:"annualized_bps"`
+	// AnnualizedUnavailable says why AnnualizedBps is nil, in words — chiefly
+	// that the drawn sessions span less than minAnnualizedSpan. TWRBps, the
+	// return over the window as it happened, is reported either way.
+	AnnualizedUnavailable string `json:"annualized_unavailable,omitempty"`
+	MaxDrawdownBps        *int64 `json:"max_drawdown_bps"`
+	Instruments           int    `json:"instruments"`
+	WithoutHistory        int    `json:"without_history"`
 	// Benchmark is what this currency's book is measured against, or nil when
 	// the user has chosen nothing. Its figures answer the one question no other
 	// report here can: whether any of this beat buying the index instead.
@@ -406,6 +410,9 @@ func summarize(curve *CurrencyCurve) {
 	twr := returnOf(last.Index)
 	curve.TWRBps = &twr
 	curve.AnnualizedBps = annualize(last.Index, span)
+	if curve.AnnualizedBps == nil && span < minAnnualizedDays {
+		curve.AnnualizedUnavailable = shortSpanReason
+	}
 
 	// The benchmark's two figures are derived the same way from the same span,
 	// which is the point: a comparison between numbers measured differently is
@@ -442,10 +449,12 @@ func returnOf(index int64) int64 {
 }
 
 // annualize turns an index's total growth into a yearly rate, or nil when the
-// span is too short to divide by. A curve one session long has no span, and
-// reporting a rate from it would be inventing precision.
+// span is shorter than minAnnualizedSpan — the rule every annual rate here
+// follows, so the curve's figure and the money-weighted one beside it appear
+// and disappear together rather than one compounding a short run the other
+// declines to.
 func annualize(index int64, span float64) *int64 {
-	if span <= 0 {
+	if span < minAnnualizedDays {
 		return nil
 	}
 	years := span / daysPerYear

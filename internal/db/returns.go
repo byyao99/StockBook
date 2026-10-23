@@ -1,7 +1,6 @@
 package db
 
 import (
-	"math"
 	"sort"
 	"time"
 
@@ -200,11 +199,8 @@ func (d *DB) ReturnsReport(userID string, asOf time.Time) ([]ReturnsSummary, err
 			// Only reachable when every holding in the currency was dropped for
 			// want of a quote: a bucket exists only where there is a holding.
 			s.Unavailable = "no holding in this currency has a quote, so there is nothing to measure a return over"
-		} else if rate, err := models.XIRR(a.flows); err != nil {
-			s.Unavailable = err.Error()
 		} else {
-			bps := int64(math.Round(rate * 10000))
-			s.XIRRBps = &bps
+			s.XIRRBps, s.Unavailable = annualizedXIRR(a.flows)
 		}
 		summaries = append(summaries, *s)
 	}
@@ -354,12 +350,7 @@ func (d *DB) currencyReturnsBetween(currency models.Currency, ledger []curveTx, 
 		summary.Unavailable = "nothing was held or traded in this period, so there is no return to measure"
 		return summary, nil
 	}
-	if rate, err := models.XIRR(flows); err != nil {
-		summary.Unavailable = err.Error()
-	} else {
-		bps := int64(math.Round(rate * 10000))
-		summary.XIRRBps = &bps
-	}
+	summary.XIRRBps, summary.Unavailable = annualizedXIRR(flows)
 	return summary, nil
 }
 

@@ -15,14 +15,6 @@ import (
 // is the other annualized figure on the same screen.
 const trailingDividendWindow = 365 * 24 * time.Hour
 
-// minAnnualizedSpan is the shortest holding period an annual rate is reported
-// for. Annualizing compounds the period's return over the rest of the year, so
-// 20% made in a month prints as roughly 800% a year — arithmetically right, and
-// a forecast nobody should read off a single month. Below a year the figure is
-// withheld rather than shown, and Unavailable says why. Measured on the same
-// actual-365 days XIRR annualizes over, so exactly a year qualifies.
-const minAnnualizedSpan = 365 * 24 * time.Hour
-
 // HoldingDetail is everything one holding's own page needs: the position, what
 // it has banked over its whole life, and how fast the money in it has grown.
 //
@@ -87,8 +79,9 @@ type HoldingDetail struct {
 	// XIRRBps is the money-weighted return on this holding alone, measured the
 	// same way and with the same convention as the book-wide figure on
 	// /reports/returns: the ledger's own flows, closed by the market value of
-	// whatever is still held. It is nil for a holding held less than
-	// minAnnualizedSpan. Unavailable says in words why there is none.
+	// whatever is still held. It is nil when the flows span less than
+	// minAnnualizedSpan, as every annual rate here is. Unavailable says in
+	// words why there is none.
 	XIRRBps     *int64 `json:"xirr_bps"`
 	Unavailable string `json:"unavailable,omitempty"`
 }
@@ -165,18 +158,6 @@ func (d *DB) HoldingDetail(userID, instrumentID string, asOf time.Time) (Holding
 		detail.YieldOnCostBps = &yield
 	}
 
-	// The holding period runs to asOf while shares are still held, and to the
-	// last entry once they are gone: a closed holding stopped having money at
-	// work then.
-	end := asOf
-	if position.Quantity == 0 {
-		end = last
-	}
-	if end.Sub(first) < minAnnualizedSpan {
-		detail.Unavailable = "held for less than a year, so an annual rate would only extrapolate a short run"
-		return detail, nil
-	}
-
 	// What is still held is a payment in at asOf, for the reason the book-wide
 	// report adds one: without it every unsold share measures as money that
 	// never came back. An open holding with no quote takes the whole figure out
@@ -191,11 +172,9 @@ func (d *DB) HoldingDetail(userID, instrumentID string, asOf time.Time) (Holding
 		flows = append(flows, models.CashFlow{At: asOf, Amount: *position.MarketValue})
 	}
 
-	if rate, err := models.XIRR(flows); err != nil {
-		detail.Unavailable = err.Error()
-	} else {
-		bps := int64(math.Round(rate * 10000))
-		detail.XIRRBps = &bps
-	}
+	// The span runs from the first entry to asOf while shares are held — the
+	// closing flow is dated then — and to the last entry once they are gone,
+	// so a quick round trip stays short however long ago it was.
+	detail.XIRRBps, detail.Unavailable = annualizedXIRR(flows)
 	return detail, nil
 }

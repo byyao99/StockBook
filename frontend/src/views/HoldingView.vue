@@ -18,7 +18,9 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { positionApi, reportApi, transactionApi } from '../api/client'
+import { instrumentApi, positionApi, reportApi, transactionApi } from '../api/client'
+import { claimAutoRun } from '../autoRefresh'
+import { historyLag, isStale } from '../historyLag'
 import {
   formatBpsMagnitudeOrUnknown,
   formatBpsOrUnknown,
@@ -73,9 +75,43 @@ async function load() {
     splits.value = allSplits.filter((s) => s.instrument_id === instrumentId.value)
   } catch (e) {
     error.value = (e as Error).message
+    return
   } finally {
     loading.value = false
   }
+  await syncIfStale()
+}
+
+/**
+ * Days the chart trails today, or null when there is nothing to measure. Only
+ * an open holding is measured: a sold one's chart may simply end where the
+ * position did, which is complete rather than stale.
+ */
+const lag = computed(() => {
+  if (!detail.value || detail.value.position.quantity === 0) return null
+  return historyLag(curve.value?.points.at(-1)?.date, '', new Date().toISOString().slice(0, 10))
+})
+const syncingHistory = ref(false)
+
+/**
+ * Tops the price history up when this chart has fallen behind — the same rule,
+ * and the same half-hour claim, as the Reports page, so moving between the two
+ * does not ask the provider twice. Quiet when it works; the notice above the
+ * chart stays when it does not.
+ */
+async function syncIfStale() {
+  if (!isStale(lag.value) || !claimAutoRun('history', 30 * 60_000)) return
+  syncingHistory.value = true
+  try {
+    await instrumentApi.syncHistory()
+  } catch {
+    // The notice already says the chart stops early; a failed top-up adds
+    // nothing the reader can act on here.
+    return
+  } finally {
+    syncingHistory.value = false
+  }
+  await load()
 }
 
 function changePage(newOffset: number) {
@@ -249,6 +285,11 @@ watch(instrumentId, () => {
             {{ formatCents(detail.proceeds + detail.dividends, currency) }} out
           </span>
         </div>
+        <p v-if="isStale(lag)" class="notice">
+          Prices are stored up to {{ curve?.points.at(-1)?.date }}, {{ lag }} days ago, so this
+          chart stops there.
+          {{ syncingHistory ? 'Syncing prices now…' : 'Sync prices on Reports to bring it up to date.' }}
+        </p>
         <p v-if="curve === null || curve.points.length === 0" class="muted">
           {{
             curve?.unavailable ??

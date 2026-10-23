@@ -340,6 +340,9 @@ export interface CurrencyCurve {
   // ReturnsSummary.xirr_bps, which weights every dollar by how long it was in.
   twr_bps: number | null
   annualized_bps: number | null
+  // Why annualized_bps is null — chiefly that the sessions drawn span less
+  // than a year, the rule every annual rate here follows.
+  annualized_unavailable?: string
   // The deepest peak-to-trough fall of the index, as a POSITIVE number: 2500
   // means the book was once 25% below its high-water mark. It is a depth, not a
   // movement, so it must never render with a leading "+".

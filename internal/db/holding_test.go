@@ -186,7 +186,10 @@ func TestHoldingDetailWithholdsTheRateUnderAYear(t *testing.T) {
 		want    bool
 	}{
 		{"open for a month", []entry{{models.SideBuy, 1000, 50_000, 0, 0}}, 30, false},
-		{"open a day short of a year", []entry{{models.SideBuy, 1000, 50_000, 0, 0}}, 364, false},
+		{"open just short of the threshold", []entry{{models.SideBuy, 1000, 50_000, 0, 0}}, 349, false},
+		// 350 days, not 365, so a calendar year measured to its last session
+		// qualifies everywhere — see minAnnualizedSpan.
+		{"open at the threshold", []entry{{models.SideBuy, 1000, 50_000, 0, 0}}, 350, true},
 		{"open exactly a year", []entry{{models.SideBuy, 1000, 50_000, 0, 0}}, 365, true},
 		{"closed after a month, asked long after", []entry{
 			{models.SideBuy, 1000, 50_000, 0, 0},

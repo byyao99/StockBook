@@ -19,6 +19,8 @@ The first session with anything in it anchors the index at 100 and reports no re
 
 **An instrument whose stored history does not reach the day it was first traded is excluded whole, trades and all**, and counted in `WithoutHistory` — the same rule the returns report follows. Counting it short would understate the book for every day before its prices begin, which looks exactly like a real drawdown. Interior gaps are different and are covered by carrying the last close forward (`priceSeries.on`), which never carries *backwards*: that is the case the exclusion exists for.
 
+`AnnualizedBps` (and the benchmark's) follows the same one-year minimum as every annual rate (`reports.md`), so the curve's yearly figure and the money-weighted one beside it appear and disappear together; `TWRBps` over the window is always reported.
+
 `TWRBps` (time-weighted) and the money-weighted `XIRRBps` are deliberately both reported and are not the same question — time-weighted measures the picking, money-weighted measures the picking *and* the timing of what was put in. Both annualize actual/365 so the two figures on one book are measured the same way.
 
 ## The benchmark

@@ -231,24 +231,69 @@ func TestWindowedReturnsClosesAtTheLastSessionNotTheBound(t *testing.T) {
 	inst := seedInstrument(t, s, "2330")
 
 	mustRecord(t, s, user.ID, inst.ID, entry{models.SideBuy, 100, 10_000, 0, 0})
-	// Prices run to the half-year and stop; the book is up 50% by then.
+	// Prices run to day 400 and stop; the book is up 50% by then. Long enough
+	// to be annualized at all, which a half-year would not be.
 	closesFrom(t, s, inst.ID, 0, 10_000)
-	closesFrom(t, s, inst.ID, 182, 15_000)
+	closesFrom(t, s, inst.ID, 400, 15_000)
 
-	// Asked for the whole year, though only half of it has happened.
-	got := mustReturnsBetween(t, s, user.ID, dayStr(0), dayStr(365))
+	// Asked for two years, though only 400 days of it have happened.
+	got := mustReturnsBetween(t, s, user.ID, dayStr(0), dayStr(730))
 
-	if want := day(182).UTC().Format(time.DateOnly); got.AsOf.Format(time.DateOnly) != want {
+	if want := day(400).UTC().Format(time.DateOnly); got.AsOf.Format(time.DateOnly) != want {
 		t.Errorf("valued as of %s, want the last stored session %s",
 			got.AsOf.Format(time.DateOnly), want)
 	}
 	if got.XIRRBps == nil {
 		t.Fatalf("no rate: %s", got.Unavailable)
 	}
-	// +50% in half a year annualizes to about +125%, not the +50% it would
-	// report if the gain were spread across the full year asked for.
-	if *got.XIRRBps < 11_000 {
-		t.Errorf("rate %d bps, want about 12500 — the gain was earned in half a year",
+	// +50% over 400 days annualizes to about +44.7%, not the +22.5% it would
+	// report if the gain were spread across the two years asked for.
+	if *got.XIRRBps < 4_000 {
+		t.Errorf("rate %d bps, want about 4470 — the gain was earned in 400 days",
 			*got.XIRRBps)
+	}
+}
+
+// The same question asked in September — "this year" with half of it gone —
+// has no annual rate at all now: a half-year compounded into a yearly figure is
+// the extrapolation every annual rate here declines to make. The period's own
+// figures still come back.
+func TestWindowedReturnsUnderAYearHasNoAnnualRate(t *testing.T) {
+	s := newTestDB(t)
+	user := seedUser(t, s, "partway")
+	inst := seedInstrument(t, s, "2330")
+
+	mustRecord(t, s, user.ID, inst.ID, entry{models.SideBuy, 100, 10_000, 0, 0})
+	closesFrom(t, s, inst.ID, 0, 10_000)
+	closesFrom(t, s, inst.ID, 182, 15_000)
+
+	got := mustReturnsBetween(t, s, user.ID, dayStr(0), dayStr(365))
+	if got.XIRRBps != nil {
+		t.Errorf("rate %d bps over half a year, want none", *got.XIRRBps)
+	}
+	if got.Unavailable != shortSpanReason {
+		t.Errorf("unavailable %q, want the short-span reason", got.Unavailable)
+	}
+	if got.EndingValue != 1_500_000 {
+		t.Errorf("ending value %d, want 1500000 — the period is still measured", got.EndingValue)
+	}
+}
+
+// A calendar-year window is measured from its opening bound to its last
+// session, a few days short of 365 once a weekend falls at the end. It is the
+// one period an annual rate literally answers, so it must still get one.
+func TestWindowedReturnsForAFullCalendarYearIsAnnualized(t *testing.T) {
+	s := newTestDB(t)
+	user := seedUser(t, s, "yearly")
+	inst := seedInstrument(t, s, "2330")
+
+	mustRecord(t, s, user.ID, inst.ID, entry{models.SideBuy, 100, 10_000, 0, 0})
+	closesFrom(t, s, inst.ID, 0, 10_000)
+	// The last session of the year three days before the bound.
+	closesFrom(t, s, inst.ID, 362, 11_000)
+
+	got := mustReturnsBetween(t, s, user.ID, dayStr(0), dayStr(365))
+	if got.XIRRBps == nil {
+		t.Fatalf("a year measured to its last session has no rate: %s", got.Unavailable)
 	}
 }
