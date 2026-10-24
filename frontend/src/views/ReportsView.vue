@@ -519,12 +519,12 @@ onMounted(async () => {
             </span>
           </div>
           <div class="stat">
-            <span class="stat-label">Opened holding</span>
+            <span class="stat-label">Value at start</span>
             <strong class="stat-value">{{ formatCents(r.opening_value, r.currency) }}</strong>
             <span class="muted stat-note">what the book was worth entering the period</span>
           </div>
           <div class="stat">
-            <span class="stat-label">Closed holding</span>
+            <span class="stat-label">Value at end</span>
             <strong class="stat-value">{{ formatCents(r.ending_value, r.currency) }}</strong>
             <span class="muted stat-note">at the last stored close in it</span>
           </div>

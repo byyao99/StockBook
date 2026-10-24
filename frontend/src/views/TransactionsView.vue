@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { instrumentApi, planApi, reportApi, settingsApi, transactionApi } from '../api/client'
+import { setPendingCount } from '../pendingCount'
 import {
   bpsToListPercent,
   formatCents,
@@ -53,6 +54,14 @@ const success = ref('')
 
 const instrumentFilter = ref('')
 const sideFilter = ref<TransactionSide | ''>('')
+// A date range over the ledger, as YYYY-MM-DD. The API reads a bare `to` as the
+// whole of that day (parseDateRange), so "to 2026-09-30" includes trades made on
+// the 30th, which is what anyone picking that date means.
+const fromFilter = ref('')
+const toFilter = ref('')
+const filtered = computed(
+  () => !!(instrumentFilter.value || sideFilter.value || fromFilter.value || toFilter.value),
+)
 
 const editingId = ref<string | null>(null)
 // Distributions the book was entitled to with no entry against them. A prompt,
@@ -293,6 +302,8 @@ async function load() {
     const page = await transactionApi.list(PAGE_SIZE, offset.value, {
       instrumentId: instrumentFilter.value || undefined,
       side: sideFilter.value || undefined,
+      from: fromFilter.value || undefined,
+      to: toFilter.value || undefined,
     })
     entries.value = page.items
     total.value = page.pagination.total
@@ -303,6 +314,9 @@ async function load() {
     ])
     pendingDividends.value = dividends
     pendingPurchases.value = purchases
+    // The nav's badge, kept in step with the prompts on this page, so
+    // recording one counts it down without a second read.
+    setPendingCount(dividends.length + purchases.length)
     if (entries.value.length === 0 && offset.value > 0) {
       offset.value = Math.max(0, offset.value - PAGE_SIZE)
       await load()
@@ -356,6 +370,14 @@ function plClass(value: number | null): string {
 function applyFilter() {
   offset.value = 0
   load()
+}
+
+function clearFilters() {
+  instrumentFilter.value = ''
+  sideFilter.value = ''
+  fromFilter.value = ''
+  toFilter.value = ''
+  applyFilter()
 }
 
 function resetForm() {
@@ -763,11 +785,34 @@ onMounted(async () => {
             <option value="">All entries</option>
             <option v-for="s in SIDES" :key="s" :value="s">{{ s }}</option>
           </select>
+          <!-- Each bound caps the other, so the picker cannot offer a range that
+               ends before it starts. -->
+          <input
+            v-model="fromFilter"
+            type="date"
+            aria-label="From date"
+            :max="toFilter || today()"
+            @change="applyFilter"
+          />
+          <span class="muted range-sep">to</span>
+          <input
+            v-model="toFilter"
+            type="date"
+            aria-label="To date"
+            :min="fromFilter || undefined"
+            :max="today()"
+            @change="applyFilter"
+          />
+          <button v-if="filtered" type="button" class="link-button" @click="clearFilters">
+            Clear
+          </button>
         </div>
       </div>
 
       <p v-if="loading" class="muted">Loading…</p>
-      <p v-else-if="entries.length === 0" class="muted">No trades recorded yet.</p>
+      <p v-else-if="entries.length === 0" class="muted">
+        {{ filtered ? 'No entries match these filters.' : 'No trades recorded yet.' }}
+      </p>
       <div v-else class="table-wrap">
         <table>
           <thead>
@@ -887,10 +932,16 @@ onMounted(async () => {
 }
 .filter {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
-.filter select {
+.filter select,
+.filter input[type='date'] {
   width: auto;
+}
+.range-sep {
+  font-size: 13px;
 }
 .preview {
   margin: 12px 0;

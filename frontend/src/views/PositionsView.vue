@@ -23,6 +23,8 @@ import {
 } from '../positionMath'
 import { byAssetType, byHolding, byMarket, topWeight } from '../allocation'
 import type { Allocation } from '../allocation'
+import { DEFAULT_HOLDING_SORT, nextSort, sortHoldings } from '../holdingSort'
+import type { HoldingSort, HoldingSortKey } from '../holdingSort'
 import PaginationBar from '../components/PaginationBar.vue'
 import SplitWarnings from '../components/SplitWarnings.vue'
 import type {
@@ -36,7 +38,14 @@ import type {
 
 const PAGE_SIZE = 20
 
-const positions = ref<Position[]>([])
+// Every holding the table can show — open ones, plus closed ones when asked
+// for. The table is sorted and paged here rather than by the API, because most
+// of its columns (market value, weight, return) are computed per row and the
+// server can only order by stored ones. A personal book is a few dozen rows at
+// most, and loading it whole is what makes "largest first" mean the largest in
+// the book rather than the largest on this page.
+const holdings = ref<Position[]>([])
+const sort = ref<HoldingSort>({ ...DEFAULT_HOLDING_SORT })
 // One summary per currency held. They are never combined into a grand total:
 // there is no FX rate in this system, so adding TWD to USD would produce a
 // number that means nothing.
@@ -45,7 +54,6 @@ const summaries = ref<CurrencySummary[]>([])
 // this page rather than under Realized: its closing figure is the market value
 // of what is still held, which is exactly what the cards here already show.
 const returns = ref<ReturnsSummary[]>([])
-const total = ref(0)
 const offset = ref(0)
 const includeClosed = ref(false)
 const loading = ref(false)
@@ -72,17 +80,17 @@ const allOpen = ref<Position[]>([])
 const allocationMode = ref<'holding' | 'market' | 'type'>('holding')
 
 /**
- * Fetch every open holding by paging to the end.
+ * Fetch every holding by paging to the end.
  *
  * The list endpoint caps a page at 100, so a book larger than that would
  * silently allocate over a prefix. Paging is a few requests at worst and is
  * always right, which is the trade this system makes everywhere else.
  */
-async function loadAllOpen(): Promise<Position[]> {
+async function loadAll(includeClosed: boolean): Promise<Position[]> {
   const items: Position[] = []
   const pageSize = 100
   for (;;) {
-    const page = await positionApi.list(pageSize, items.length, false)
+    const page = await positionApi.list(pageSize, items.length, includeClosed)
     items.push(...page.items)
     if (items.length >= page.pagination.total || page.items.length === 0) return items
   }
@@ -92,23 +100,20 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [page, totals, rates, open, unadjusted] = await Promise.all([
-      positionApi.list(PAGE_SIZE, offset.value, includeClosed.value),
+    const [all, totals, rates, unadjusted] = await Promise.all([
+      loadAll(includeClosed.value),
       positionApi.summary(),
       reportApi.returns(),
-      loadAllOpen(),
       reportApi.splits(),
     ])
-    positions.value = page.items
-    total.value = page.pagination.total
+    holdings.value = all
     summaries.value = totals
     returns.value = rates
-    allOpen.value = open
+    allOpen.value = all.filter((p) => p.quantity > 0)
     splits.value = unadjusted
-    // If a filter change emptied the current page, step back one.
-    if (positions.value.length === 0 && offset.value > 0) {
+    // If the book shrank under the current page, step back to the last one.
+    while (offset.value > 0 && offset.value >= all.length) {
       offset.value = Math.max(0, offset.value - PAGE_SIZE)
-      await load()
     }
   } catch (e) {
     error.value = (e as Error).message
@@ -117,9 +122,33 @@ async function load() {
   }
 }
 
+const total = computed(() => holdings.value.length)
+const sortedHoldings = computed(() => sortHoldings(holdings.value, sort.value, weightOf))
+const positions = computed(() =>
+  sortedHoldings.value.slice(offset.value, offset.value + PAGE_SIZE),
+)
+
 function changePage(newOffset: number) {
   offset.value = newOffset
-  load()
+}
+
+// Choosing a column starts it in its natural direction (largest first, or A to
+// Z for the symbol) and clicking it again flips it. A new order starts from the
+// first page: page two of a different order is a different set of rows.
+function sortBy(key: HoldingSortKey) {
+  sort.value = nextSort(sort.value, key)
+  offset.value = 0
+}
+
+/** aria-sort for a header, so the active column is announced and not only drawn. */
+function ariaSort(key: HoldingSortKey): 'ascending' | 'descending' | 'none' {
+  if (sort.value.key !== key) return 'none'
+  return sort.value.dir === 'asc' ? 'ascending' : 'descending'
+}
+
+function sortArrow(key: HoldingSortKey): string {
+  if (sort.value.key !== key) return ''
+  return sort.value.dir === 'asc' ? '▲' : '▼'
 }
 
 // Pulling fresh quotes belongs on this page as much as on the instruments one:
@@ -455,17 +484,60 @@ onMounted(async () => {
         <table>
           <thead>
             <tr>
-              <th>Symbol</th>
+              <!-- Every column but the currency sorts. The header is a button inside
+                   the th so it is reachable and operable from the keyboard; aria-sort
+                   tells a screen reader which column is active. -->
+              <th :aria-sort="ariaSort('symbol')">
+                <button type="button" class="sort" @click="sortBy('symbol')">
+                  Symbol<span class="arrow">{{ sortArrow('symbol') }}</span>
+                </button>
+              </th>
               <th>Ccy</th>
-              <th class="num">Shares</th>
-              <th class="num">Avg cost</th>
-              <th class="num">Cost basis</th>
-              <th class="num">Last price</th>
-              <th class="num">Market value</th>
-              <th class="num">Weight</th>
-              <th class="num">Unrealized</th>
-              <th class="num">Return</th>
-              <th class="num">Realized</th>
+              <th class="num" :aria-sort="ariaSort('shares')">
+                <button type="button" class="sort" @click="sortBy('shares')">
+                  Shares<span class="arrow">{{ sortArrow('shares') }}</span>
+                </button>
+              </th>
+              <th class="num" :aria-sort="ariaSort('avg_cost')">
+                <button type="button" class="sort" @click="sortBy('avg_cost')">
+                  Avg cost<span class="arrow">{{ sortArrow('avg_cost') }}</span>
+                </button>
+              </th>
+              <th class="num" :aria-sort="ariaSort('cost_basis')">
+                <button type="button" class="sort" @click="sortBy('cost_basis')">
+                  Cost basis<span class="arrow">{{ sortArrow('cost_basis') }}</span>
+                </button>
+              </th>
+              <th class="num" :aria-sort="ariaSort('last_price')">
+                <button type="button" class="sort" @click="sortBy('last_price')">
+                  Last price<span class="arrow">{{ sortArrow('last_price') }}</span>
+                </button>
+              </th>
+              <th class="num" :aria-sort="ariaSort('market_value')">
+                <button type="button" class="sort" @click="sortBy('market_value')">
+                  Market value<span class="arrow">{{ sortArrow('market_value') }}</span>
+                </button>
+              </th>
+              <th class="num" :aria-sort="ariaSort('weight')">
+                <button type="button" class="sort" @click="sortBy('weight')">
+                  Weight<span class="arrow">{{ sortArrow('weight') }}</span>
+                </button>
+              </th>
+              <th class="num" :aria-sort="ariaSort('unrealized')">
+                <button type="button" class="sort" @click="sortBy('unrealized')">
+                  Unrealized<span class="arrow">{{ sortArrow('unrealized') }}</span>
+                </button>
+              </th>
+              <th class="num" :aria-sort="ariaSort('return')">
+                <button type="button" class="sort" @click="sortBy('return')">
+                  Return<span class="arrow">{{ sortArrow('return') }}</span>
+                </button>
+              </th>
+              <th class="num" :aria-sort="ariaSort('realized')">
+                <button type="button" class="sort" @click="sortBy('realized')">
+                  Realized<span class="arrow">{{ sortArrow('realized') }}</span>
+                </button>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -513,10 +585,37 @@ onMounted(async () => {
 
       <PaginationBar :limit="PAGE_SIZE" :offset="offset" :total="total" @change="changePage" />
     </section>
+
   </div>
 </template>
 
 <style scoped>
+/* A sortable header still reads as a header: the th's own small caps and grey,
+   with the button only adding the pointer and the arrow. The arrow takes space
+   only on the active column — eleven columns already fill the card, and a
+   reserved slot on each pushed the last one out of view. */
+th button.sort {
+  all: unset;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+th button.sort:hover,
+th[aria-sort='ascending'] button.sort,
+th[aria-sort='descending'] button.sort {
+  color: #0f172a;
+}
+th button.sort:focus-visible {
+  outline: 2px solid #0d9488;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+th button.sort .arrow:not(:empty) {
+  margin-left: 3px;
+  font-size: 9px;
+}
 .page-actions {
   display: flex;
   justify-content: flex-end;

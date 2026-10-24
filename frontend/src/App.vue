@@ -1,8 +1,23 @@
 <script setup lang="ts">
-import { RouterLink, RouterView, useRouter } from 'vue-router'
+import { watch } from 'vue'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import { clearPendingCount, pendingCount, refreshPendingCount } from './pendingCount'
 import { currentUser, isAuthenticated, isAdmin, clearSession } from './session'
 
 const router = useRouter()
+const route = useRoute()
+
+// Re-read the Ledger's prompt count on every navigation, so a dividend that
+// went ex or an instalment that came due shows up wherever the reader is. The
+// Ledger page reports its own count after loading, so it is not asked twice.
+watch(
+  [() => route.path, isAuthenticated],
+  ([path, signedIn]) => {
+    if (!signedIn) clearPendingCount()
+    else if (path !== '/transactions') refreshPendingCount()
+  },
+  { immediate: true },
+)
 
 function logout() {
   clearSession()
@@ -16,7 +31,16 @@ function logout() {
       <h1 class="brand">📈 StockBook</h1>
       <nav class="nav">
         <RouterLink v-if="isAuthenticated" to="/positions" class="nav-link">Holdings</RouterLink>
-        <RouterLink v-if="isAuthenticated" to="/transactions" class="nav-link">Ledger</RouterLink>
+        <RouterLink v-if="isAuthenticated" to="/transactions" class="nav-link">
+          Ledger
+          <span
+            v-if="pendingCount"
+            class="nav-badge"
+            :title="`${pendingCount} waiting to be recorded`"
+            :aria-label="`${pendingCount} waiting to be recorded`"
+            >{{ pendingCount }}</span
+          >
+        </RouterLink>
         <RouterLink v-if="isAuthenticated" to="/reports" class="nav-link">Reports</RouterLink>
         <RouterLink v-if="isAuthenticated" to="/research" class="nav-link">Research</RouterLink>
         <RouterLink v-if="isAdmin" to="/users" class="nav-link">Users</RouterLink>
@@ -107,6 +131,21 @@ function logout() {
 .nav-link.router-link-active {
   background: #0d9488;
   color: #fff;
+}
+/* Amber like the page's own prompts, so the badge and what it counts are
+   recognisably the same thing. */
+.nav-badge {
+  display: inline-block;
+  min-width: 18px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
 }
 .content {
   max-width: 1100px;
