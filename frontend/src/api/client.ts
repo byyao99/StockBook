@@ -29,6 +29,7 @@ import type {
   ReturnsSummary,
   Role,
   SyncReport,
+  TargetWeight,
   Transaction,
   TransactionEdit,
   TransactionInput,
@@ -323,6 +324,22 @@ export const settingsApi = {
       method: 'PUT',
       body: JSON.stringify({ benchmarks }),
     }),
+
+  targets: () => request<TargetWeight[]>('/settings/targets'),
+
+  // Saves the FULL set, like benchmarks: anything left out is cleared, and an
+  // empty list clears every target. Each currency present must add up to 100%.
+  saveTargets: (targets: TargetInput[]) =>
+    request<TargetWeight[]>('/settings/targets', {
+      method: 'PUT',
+      body: JSON.stringify({ targets }),
+    }),
+}
+
+/** One target weight on the way to the server. */
+export interface TargetInput {
+  instrument_id: string
+  weight_bps: number
 }
 
 /** One currency's benchmark choice on the way to the server. */

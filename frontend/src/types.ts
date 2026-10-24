@@ -385,6 +385,19 @@ export interface Benchmark {
   name: string
 }
 
+// TargetWeight is the share of its currency's book one instrument is meant to
+// be (db.TargetView). Each currency's weights add up to exactly 10000 bps; the
+// server refuses a set that does not. `last_price` lets the planner size a
+// purchase of something targeted but not held yet.
+export interface TargetWeight {
+  instrument_id: string
+  symbol: string
+  name: string
+  currency: Currency
+  weight_bps: number
+  last_price: number | null
+}
+
 // The outcome of one instrument in a price-history sync.
 export interface SyncResult {
   instrument_id: string

@@ -116,6 +116,7 @@ func Open(dsn string) (*DB, error) {
 		&models.SchemaMeta{},
 		&models.RecurringPlan{},
 		&models.Benchmark{},
+		&models.TargetWeight{},
 	); err != nil {
 		return nil, err
 	}

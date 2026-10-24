@@ -225,6 +225,30 @@ type Benchmark struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// TargetWeight is the share of its currency's book a user means one instrument
+// to be, in basis points (2500 = 25%).
+//
+// Per currency, like every weight here: there is no FX rate, so a target can
+// only be a share of the book in the instrument's own money, and each
+// currency's targets are a complete plan of their own that must add up to
+// 100% (db.SaveTargets refuses anything else). An instrument may be targeted
+// before it is held — a plan to start buying VT is exactly that.
+//
+// It is configuration, not ledger, in the same way a RecurringPlan is: it says
+// what the book is meant to look like and changes nothing in it. What it feeds
+// is the contribution planner on Holdings, which suggests where new money
+// should go and never posts anything.
+type TargetWeight struct {
+	UserID       string    `gorm:"primaryKey" json:"-"`
+	InstrumentID string    `gorm:"primaryKey" json:"instrument_id"`
+	WeightBps    int64     `json:"weight_bps"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// FullWeightBps is 100% in basis points: what each currency's targets add up to.
+const FullWeightBps = 10000
+
 // MaxPlanDay is the highest day of the month a plan may name. Clamping handles
 // the short months; this only refuses a number that is not a day at all.
 const MaxPlanDay = 31

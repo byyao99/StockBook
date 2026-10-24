@@ -107,6 +107,13 @@ func respondDBError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
+	// A target set that cannot be saved is a bad request rather than a conflict:
+	// nothing else in the book disagrees with it, the set itself is malformed.
+	// The message names the currency or the rule, which is what to fix.
+	if errors.Is(err, db.ErrInvalidTargets) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if errors.Is(err, db.ErrBenchmarkCurrency) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return

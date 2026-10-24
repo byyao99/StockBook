@@ -255,3 +255,45 @@ func (h *SettingsHandler) SaveBenchmarks(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": saved})
 }
+
+// saveTargetsRequest is the payload for PUT /settings/targets: the whole set,
+// replacing whatever was there. An empty list clears every target.
+type saveTargetsRequest struct {
+	Targets []targetChoice `json:"targets" binding:"required,dive"`
+}
+
+type targetChoice struct {
+	InstrumentID string `json:"instrument_id" binding:"required"`
+	WeightBps    int64  `json:"weight_bps"`
+}
+
+// Targets handles GET /api/v1/settings/targets.
+func (h *SettingsHandler) Targets(c *gin.Context) {
+	saved, err := h.db.Targets(callerID(c))
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": saved})
+}
+
+// SaveTargets handles PUT /api/v1/settings/targets. Validation — weights in
+// range, each currency adding up to 100% — lives in db.SaveTargets, since the
+// currency a weight belongs to is only known once its instrument is looked up.
+func (h *SettingsHandler) SaveTargets(c *gin.Context) {
+	var req saveTargetsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	inputs := make([]db.TargetInput, len(req.Targets))
+	for i, t := range req.Targets {
+		inputs[i] = db.TargetInput{InstrumentID: t.InstrumentID, WeightBps: t.WeightBps}
+	}
+	saved, err := h.db.SaveTargets(callerID(c), inputs)
+	if err != nil {
+		respondDBError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": saved})
+}

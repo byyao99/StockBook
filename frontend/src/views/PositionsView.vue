@@ -27,6 +27,7 @@ import { DEFAULT_HOLDING_SORT, nextSort, sortHoldings } from '../holdingSort'
 import type { HoldingSort, HoldingSortKey } from '../holdingSort'
 import PaginationBar from '../components/PaginationBar.vue'
 import SplitWarnings from '../components/SplitWarnings.vue'
+import TargetAllocation from '../components/TargetAllocation.vue'
 import type {
   Currency,
   CurrencySummary,
@@ -586,6 +587,11 @@ onMounted(async () => {
       <PaginationBar :limit="PAGE_SIZE" :offset="offset" :total="total" @change="changePage" />
     </section>
 
+    <!-- Below the table rather than beside the allocation bar: the bar is read
+         on every visit, while the plan is edited rarely and consulted when
+         there is money to put in. It reads the same every-open-holding list
+         the bar does, never the page of the table above. -->
+    <TargetAllocation v-if="!loading || allOpen.length > 0" :positions="allOpen" />
   </div>
 </template>
 

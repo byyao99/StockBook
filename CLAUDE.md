@@ -89,7 +89,7 @@ DIVIDEND:             realized += payout - withheld          // income, never a 
 | `POST /instruments/sync-history` | any authenticated user, rate-limited 2/min per IP |
 | `GET /research/news`, `GET /research/fundamentals` | any authenticated user; the feed is **scoped to their own holdings** |
 | `POST /research/sync` | any authenticated user, rate-limited 2/min per IP |
-| `/transactions/*`, `/positions/*` (incl. `/positions/:instrument_id`), `/reports/*` (incl. `/reports/dividends` and `/reports/splits`), `/plans/*`, `/settings/*` (fees **and** benchmarks) | any authenticated user, **scoped to themselves** |
+| `/transactions/*`, `/positions/*` (incl. `/positions/:instrument_id`), `/reports/*` (incl. `/reports/dividends` and `/reports/splits`), `/plans/*`, `/settings/*` (fees, benchmarks **and** target weights) | any authenticated user, **scoped to themselves** |
 | `/users/*` | admin |
 
 List endpoints take `?limit` (default 20, max 100), `?offset`, `?sort`, `?order` and answer `{"data": [...], "pagination": {...}}`; sorting only ever emits a column from a per-resource allowlist — never interpolate `ListOptions.Sort`.
@@ -112,7 +112,7 @@ Read the relevant file before changing an area — each records decisions that l
 | Equity curve and benchmark | `docs/design/curve-and-benchmark.md` | `curve.go`, `benchmarks.go`, `curveMath.ts` |
 | Realized, hindsight, XIRR reports | `docs/design/reports.md` | `reports.go`, `hindsight.go`, `returns.go`, `xirr.go` |
 | A holding's own page | `docs/design/holding.md` | `holding.go`, `HoldingView.vue` |
-| Allocation | `docs/design/allocation.md` | `allocation.ts` |
+| Allocation, target weights, contribution planner | `docs/design/allocation.md` | `allocation.ts`, `rebalance.ts`, `internal/db/targets.go` |
 | Pagination, auth, scoping, logging | `docs/design/api-and-auth.md` | `internal/auth`, `internal/middleware` |
 | Frontend views and components | `docs/design/frontend.md` | `frontend/src` |
 | dev.sh, tests, CI | `docs/design/dev-tooling.md` | `dev.sh` |
