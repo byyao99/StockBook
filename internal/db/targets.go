@@ -24,7 +24,11 @@ type TargetView struct {
 	Symbol       string          `json:"symbol"`
 	Name         string          `json:"name"`
 	Currency     models.Currency `json:"currency"`
-	WeightBps    int64           `json:"weight_bps"`
+	// Market and AssetType pick the fee profile a planned purchase is
+	// estimated under, for an instrument targeted but not yet held.
+	Market    string `json:"market"`
+	AssetType string `json:"asset_type"`
+	WeightBps int64  `json:"weight_bps"`
 	// LastPrice is the instrument's quote, nil when it has none. Carried so the
 	// planner can size a purchase of something targeted but not yet held,
 	// which no position on the page would otherwise price.
@@ -52,6 +56,8 @@ func targetsOf(tx *gorm.DB, userID string) ([]TargetView, error) {
 			instruments.symbol AS symbol,
 			instruments.name AS name,
 			instruments.currency AS currency,
+			instruments.market AS market,
+			instruments.asset_type AS asset_type,
 			target_weights.weight_bps AS weight_bps,
 			instruments.last_price AS last_price`).
 		Order("instruments.currency asc, target_weights.weight_bps desc, instruments.symbol asc").

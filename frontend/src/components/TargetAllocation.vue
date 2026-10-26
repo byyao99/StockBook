@@ -12,6 +12,12 @@
  * arithmetic lives in rebalance.ts, unit-tested; this component only edits the
  * set and renders what that module returns.
  *
+ * Fees are estimated from the reader's own fee profiles (Account page), under
+ * the profile the trade form would default to for each instrument, and paid
+ * out of the same money: a suggestion never needs more than was offered. A
+ * savings-plan panel splits a monthly budget across the targets, beside what
+ * the active plans put in now.
+ *
  * Targets are edited as one set across every currency and saved whole,
  * because the server only accepts a set in which each currency adds up to
  * 100%: weights edited one at a time would pass through states that do not.
@@ -21,17 +27,21 @@
  * the one the broker confirms.
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import { instrumentApi, settingsApi } from '../api/client'
+import { instrumentApi, planApi, settingsApi } from '../api/client'
+import { defaultProfileKey, estimateFee, findProfile } from '../feeMath'
 import {
   formatCents,
+  formatCentsOrUnknown,
   formatPercentMagnitudeOrUnknown,
   formatSignedCents,
   formatSignedOrUnknown,
+  fromCents,
   toCents,
 } from '../money'
-import { drift, planContribution, planRebalance, targetsFromCurrent } from '../rebalance'
+import { drift, isActivePlan, monthlyOutlay, planContribution, planRebalance, planSavings, targetsFromCurrent } from '../rebalance'
+import type { FeeFn } from '../rebalance'
 import { ESTIMATE_DECIMALS, formatShares, fromShares } from '../shares'
-import type { Currency, Instrument, Position, TargetWeight } from '../types'
+import type { Currency, FeeProfile, Instrument, Position, RecurringPlan, TargetWeight } from '../types'
 import InstrumentPicker from './InstrumentPicker.vue'
 
 const props = defineProps<{
@@ -41,6 +51,8 @@ const props = defineProps<{
 
 const targets = ref<TargetWeight[]>([])
 const instruments = ref<Instrument[]>([])
+const feeProfiles = ref<FeeProfile[]>([])
+const savingsPlans = ref<RecurringPlan[]>([])
 const error = ref('')
 const success = ref('')
 const saving = ref(false)
@@ -86,13 +98,35 @@ const drifts = computed(() => new Map(currencies.value.map((c) => [c, drift(held
 const amounts = ref<Record<string, number | null>>({})
 const wholeShares = ref<Record<string, boolean>>({})
 
+/**
+ * The fee a suggested trade would cost, under the profile the trade form would
+ * pick for that instrument as an ordinary (not scheduled) trade. Null when no
+ * profile applies — a market with no fee terms — which the plan counts.
+ */
+const fee = computed<FeeFn | undefined>(() => {
+  if (feeProfiles.value.length === 0) return undefined
+  const kind = new Map<string, { market: string; asset_type: string }>()
+  for (const t of targets.value) kind.set(t.instrument_id, t)
+  for (const p of props.positions) kind.set(p.instrument_id, p)
+  return (id, side, shares, price) => {
+    const key = defaultProfileKey(kind.get(id) as Instrument | undefined, false)
+    return estimateFee(findProfile(feeProfiles.value, key ?? ''), side, shares, price)
+  }
+})
+
 const plans = computed(
   () =>
     new Map(
       currencies.value.map((c) => {
         const dollars = amounts.value[c]
         if (mode.value !== 'buy' || !dollars || dollars <= 0 || targetsIn(c).length === 0) return [c, null]
-        return [c, planContribution(heldIn(c), targetsIn(c), toCents(dollars), { wholeShares: !!wholeShares.value[c] })]
+        return [
+          c,
+          planContribution(heldIn(c), targetsIn(c), toCents(dollars), {
+            wholeShares: !!wholeShares.value[c],
+            fee: fee.value,
+          }),
+        ]
       }),
     ),
 )
@@ -105,7 +139,40 @@ const rebalances = computed(
       currencies.value.map((c) => {
         if (mode.value !== 'rebalance' || targetsIn(c).length === 0) return [c, null]
         const extra = toCents(Math.max(0, amounts.value[c] ?? 0))
-        return [c, planRebalance(heldIn(c), targetsIn(c), extra, { wholeShares: !!wholeShares.value[c] })]
+        return [c, planRebalance(heldIn(c), targetsIn(c), extra, { wholeShares: !!wholeShares.value[c], fee: fee.value })]
+      }),
+    ),
+)
+
+// --- Savings plans ---------------------------------------------------------
+
+function todayUTC(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+const plansIn = (c: Currency) => savingsPlans.value.filter((p) => p.currency === c)
+
+/** What the active plans in a currency put in a month now. */
+const currentMonthly = (c: Currency) =>
+  plansIn(c)
+    .filter((p) => isActivePlan(p, todayUTC()))
+    .reduce((sum, p) => sum + monthlyOutlay(p), 0)
+
+// The budget starts at what the plans already spend, so the first reading is
+// "the same money, split by the targets" — then the reader can change it.
+const budgets = ref<Record<string, number | null>>({})
+const horizons = ref<Record<string, number>>({})
+
+const savings = computed(
+  () =>
+    new Map(
+      currencies.value.map((c) => {
+        const dollars = budgets.value[c]
+        if (!dollars || dollars <= 0 || targetsIn(c).length === 0) return [c, null]
+        return [
+          c,
+          planSavings(heldIn(c), targetsIn(c), plansIn(c), toCents(dollars), horizons.value[c] ?? 12, todayUTC()),
+        ]
       }),
     ),
 )
@@ -128,6 +195,13 @@ function formatDrift(d: number | null): string {
 function driftClass(d: number | null): string {
   if (d === null || Math.abs(d) < FAR_DRIFT) return 'muted'
   return d > 0 ? 'over' : 'under'
+}
+
+/** "Fees ≈ $9.00 at your fee profiles", noting any that could not be estimated. */
+function feeLine(total: number, unknown: number, c: Currency): string {
+  let line = `Fees ≈ ${formatCents(total, c)}, estimated from your fee profiles and paid out of the same money.`
+  if (unknown > 0) line += ` ${unknown} could not be estimated (no profile fits) and are not included.`
+  return line
 }
 
 function sharesLabel(shares: number | null, whole: boolean): string {
@@ -254,6 +328,18 @@ onMounted(async () => {
     targets.value = await settingsApi.targets()
   } catch (e) {
     error.value = (e as Error).message
+  }
+  // Neither is essential: without fee profiles the plans are gross and say
+  // so, and without the plans list the savings panel starts from an empty
+  // budget. Neither failure is worth a red banner over the whole block.
+  const [profiles, plansList] = await Promise.allSettled([settingsApi.feeProfiles(), planApi.list()])
+  if (profiles.status === 'fulfilled') feeProfiles.value = profiles.value
+  if (plansList.status === 'fulfilled') {
+    savingsPlans.value = plansList.value
+    for (const c of currencies.value) {
+      const now = currentMonthly(c)
+      if (budgets.value[c] == null && now > 0) budgets.value[c] = fromCents(now)
+    }
   }
   await loadInstruments()
 })
@@ -389,6 +475,7 @@ onMounted(async () => {
                       <th>Buy</th>
                       <th class="num">Amount</th>
                       <th class="num">Shares</th>
+                      <th v-if="fee" class="num">Fee</th>
                       <th class="num">Weight after</th>
                       <th class="num">Target</th>
                     </tr>
@@ -398,12 +485,16 @@ onMounted(async () => {
                       <td><strong>{{ p.symbol }}</strong></td>
                       <td class="num">{{ formatCents(p.amount, c) }}</td>
                       <td class="num">{{ sharesLabel(p.shares, !!wholeShares[c]) }}</td>
+                      <td v-if="fee" class="num">{{ formatCentsOrUnknown(p.fee, c) }}</td>
                       <td class="num">{{ formatPercentMagnitudeOrUnknown(p.weightAfter) }}</td>
                       <td class="num muted">{{ formatPercentMagnitudeOrUnknown(p.target) }}</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
+              <p v-if="fee && plans.get(c)!.purchases.length > 0" class="muted planner-note">
+                {{ feeLine(plans.get(c)!.fees, plans.get(c)!.feesUnknown, c) }}
+              </p>
               <p v-if="plans.get(c)!.leftover > 0" class="muted planner-note">
                 {{ formatCents(plans.get(c)!.leftover, c) }} left over — not enough for another whole
                 share of anything below its target.
@@ -432,6 +523,7 @@ onMounted(async () => {
                       <th>Trade</th>
                       <th class="num">Amount</th>
                       <th class="num">Shares</th>
+                      <th v-if="fee" class="num">Fee</th>
                       <th class="num">Realized</th>
                       <th class="num">Weight after</th>
                       <th class="num">Target</th>
@@ -446,6 +538,7 @@ onMounted(async () => {
                       <td class="num">{{ formatCents(t.amount, c) }}</td>
                       <!-- Selling a line out is the shares held, exactly — not an estimate. -->
                       <td class="num">{{ sharesLabel(t.shares, !!wholeShares[c] || (t.side === 'sell' && t.target === 0)) }}</td>
+                      <td v-if="fee" class="num">{{ formatCentsOrUnknown(t.fee, c) }}</td>
                       <!-- A buy realizes nothing, which is an em dash, not $0.00. -->
                       <td class="num" :class="t.realized === null ? 'muted' : t.realized < 0 ? 'loss' : 'gain'">
                         {{ formatSignedOrUnknown(t.realized, c) }}
@@ -459,11 +552,15 @@ onMounted(async () => {
               <p v-if="rebalances.get(c)!.trades.some((t) => t.side === 'sell')" class="notice">
                 Selling would realize
                 <strong>{{ formatSignedCents(rebalances.get(c)!.realized, c) }}</strong> at moving-average
-                cost, before fees and any tax — the cost that Buy only avoids.
+                cost, {{ fee ? 'after the estimated fees' : 'before fees' }} and before any tax — the cost
+                that Buy only avoids.
+              </p>
+              <p v-if="fee && rebalances.get(c)!.trades.length > 0" class="muted planner-note">
+                {{ feeLine(rebalances.get(c)!.fees, rebalances.get(c)!.feesUnknown, c) }}
               </p>
               <p v-if="rebalances.get(c)!.cash > 0" class="muted planner-note">
                 {{ formatCents(rebalances.get(c)!.cash, c) }} left over — not enough for another whole share
-                of anything below its target.
+                of anything below its target, fee included.
               </p>
               <p v-for="s in rebalances.get(c)!.skipped" :key="s.symbol" class="notice">
                 {{ s.symbol }} is left out: {{ s.reason }}.
@@ -473,6 +570,75 @@ onMounted(async () => {
                 This is a suggestion — record the trades once the broker confirms what filled.
               </p>
             </template>
+          </div>
+
+          <div class="planner">
+            <h4 class="planner-title">Savings plans</h4>
+            <p class="muted planner-lead">
+              How a monthly budget should be split across the targets. Off target it leans into what is
+              short — harder over a shorter horizon — and once on target it divides by the weights.
+            </p>
+            <div class="planner-inputs">
+              <label>
+                Per month ({{ c }})
+                <input v-model.number="budgets[c]" type="number" min="0" step="1" placeholder="e.g. 500" />
+              </label>
+              <label>
+                Reach targets over
+                <select
+                  :value="horizons[c] ?? 12"
+                  @change="horizons[c] = Number(($event.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="m in [3, 6, 12, 24, 36, 60]" :key="m" :value="m">{{ m }} months</option>
+                </select>
+              </label>
+            </div>
+            <p v-if="currentMonthly(c) > 0" class="muted planner-note">
+              Your active {{ c }} plans put in {{ formatCents(currentMonthly(c), c) }} a month now.
+            </p>
+            <div v-if="savings.get(c)" class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Plan</th>
+                    <th class="num">Target</th>
+                    <th class="num">Now / month</th>
+                    <th class="num">Suggested / month</th>
+                    <th class="num">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="l in savings.get(c)!.lines" :key="l.instrumentId">
+                    <td>
+                      <strong>{{ l.symbol }}</strong>
+                      <span v-if="l.target === null" class="muted"> · not in the targets</span>
+                    </td>
+                    <td class="num muted">{{ l.target === null ? '—' : formatPercentMagnitudeOrUnknown(l.target) }}</td>
+                    <td class="num">{{ l.current > 0 ? formatCents(l.current, c) : '—' }}</td>
+                    <td class="num">{{ l.suggested > 0 ? formatCents(l.suggested, c) : '—' }}</td>
+                    <td class="num" :class="l.suggested - l.current < 0 ? 'sell' : ''">
+                      {{
+                        l.suggested === l.current
+                          ? 'no change'
+                          : l.current === 0
+                            ? 'start'
+                            : l.suggested === 0
+                              ? 'stop'
+                              : formatSignedCents(l.suggested - l.current, c)
+                      }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-for="s in savings.get(c)?.skipped ?? []" :key="s.symbol" class="notice">
+              {{ s.symbol }} is left out: {{ s.reason }}.
+            </p>
+            <p v-if="savings.get(c)" class="muted planner-note">
+              Amounts are what each plan debits for shares, before its fee. To change one, change it at the
+              broker, then on the Ledger page stop the old plan and add the new one from the day it
+              changes — editing a plan rewrites it backwards, which would re-price instalments already due.
+            </p>
           </div>
         </template>
       </section>
@@ -649,6 +815,16 @@ onMounted(async () => {
 .planner-note {
   margin: 8px 0 0;
   font-size: 13px;
+}
+.planner-lead {
+  margin: -4px 0 10px;
+  font-size: 13px;
+}
+.planner-inputs select {
+  width: 160px;
+}
+.planner + .planner {
+  margin-top: 12px;
 }
 .edit-head {
   display: flex;

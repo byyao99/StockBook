@@ -394,6 +394,9 @@ export interface TargetWeight {
   symbol: string
   name: string
   currency: Currency
+  // Which fee profile a planned purchase is estimated under (feeMath).
+  market: string
+  asset_type: string
   weight_bps: number
   last_price: number | null
 }

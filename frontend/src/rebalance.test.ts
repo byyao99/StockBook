@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { drift, planContribution, planRebalance, targetsFromCurrent } from './rebalance'
+import { drift, monthlyOutlay, planContribution, planRebalance, planSavings, targetsFromCurrent } from './rebalance'
+import type { FeeFn } from './rebalance'
 import { fromShares } from './shares'
-import type { Position, TargetWeight } from './types'
+import type { Position, RecurringPlan, TargetWeight } from './types'
 
 // A holding of `shares` at `price` cents a share, costing what it is worth.
 function holding(symbol: string, shares: number, price: number | null): Position {
@@ -30,6 +31,8 @@ function target(symbol: string, percent: number, price: number | null = null): T
     symbol,
     name: symbol,
     currency: 'USD',
+    market: 'NYSE',
+    asset_type: 'ETF',
     weight_bps: percent * 100,
     last_price: price,
   }
@@ -304,5 +307,118 @@ describe('planRebalance', () => {
       ['buy', 'VT', 50],
     ])
     expect(plan.cash).toBe(0)
+  })
+})
+
+// A flat $3 a trade, like the user's US ETF profile, and 0.1% with a $1
+// minimum for a "stock" — enough to tell the two kinds of fee apart.
+const flat3: FeeFn = () => 300
+const pct: FeeFn = (_id, _side, shares, price) => Math.max(Math.round(shares * price * 0.001), 100)
+
+describe('fees', () => {
+  it('fits the purchases and their fees inside the contribution', () => {
+    const book = [holding('VOO', 5, 10_000), holding('VT', 5, 10_000)]
+    const plan = planContribution(book, [target('VOO', 50), target('VT', 50)], 20_000, { fee: flat3 })
+    // Two purchases, $3 each: $194 is left to split.
+    expect(plan.fees).toBe(600)
+    expect(plan.purchases.reduce((s, p) => s + p.amount, 0)).toBe(19_400)
+    expect(plan.leftover).toBe(0)
+  })
+
+  it('prices a whole share at its price plus the fee it adds', () => {
+    // $103 buys one $100 share with its $3 fee; $102 buys nothing.
+    const book = [holding('VOO', 1, 10_000)]
+    const t = [target('VOO', 50), target('VT', 50, 10_000)]
+    expect(planContribution(book, t, 10_300, { wholeShares: true, fee: flat3 }).purchases).toHaveLength(1)
+    const short = planContribution(book, t, 10_200, { wholeShares: true, fee: flat3 })
+    expect(short.purchases).toHaveLength(0)
+    expect(short.leftover).toBe(10_200)
+  })
+
+  // The ledger's own subtraction: (proceeds − fee) − cost removed.
+  it('takes the fee out of a sale’s realized result', () => {
+    const intc = { ...holding('INTC', 4, 8_696), cost_basis: 35_647 }
+    const plan = planRebalance([holding('VOO', 1, 10_000), intc], [target('VOO', 100)], 0, { fee: pct })
+    const sale = plan.trades.find((t) => t.symbol === 'INTC')!
+    expect(sale.fee).toBe(100) // 0.1% of $347.84 is under the $1 minimum
+    expect(sale.realized).toBe(34_784 - 100 - 35_647)
+  })
+
+  it('pays the buys and their fees out of the sales and new money, never more', () => {
+    const book = [holding('VOO', 6, 10_000), holding('PLTR', 4, 10_000)]
+    for (const wholeShares of [false, true]) {
+      const plan = planRebalance(book, [target('VOO', 80), target('PLTR', 20)], 0, { wholeShares, fee: flat3 })
+      expect(plan.cash).toBeGreaterThanOrEqual(0)
+      expect(plan.fees).toBe(plan.trades.length * 300)
+    }
+  })
+
+  // Unknown is not zero: a fee that cannot be estimated is counted.
+  it('counts fees it cannot estimate rather than calling them free', () => {
+    const none: FeeFn = () => null
+    const plan = planContribution([holding('VOO', 1, 10_000)], [target('VOO', 100)], 5_000, { fee: none })
+    expect(plan.fees).toBe(0)
+    expect(plan.feesUnknown).toBe(1)
+    expect(plan.purchases[0].fee).toBeNull()
+  })
+})
+
+function plan(symbol: string, days: string, amount: number, endedOn = ''): RecurringPlan {
+  return {
+    id: symbol + days,
+    user_id: 'u',
+    instrument_id: symbol,
+    days_of_month: days,
+    amount,
+    started_on: '2026-07-01',
+    ended_on: endedOn,
+    created_at: '',
+    updated_at: '',
+    symbol,
+    name: symbol,
+    currency: 'USD',
+  }
+}
+
+describe('planSavings', () => {
+  it('reads a plan’s monthly outlay from its days', () => {
+    expect(monthlyOutlay(plan('QQQM', '5,15,25', 10_000))).toBe(30_000)
+  })
+
+  // On target already: the budget divides in the target proportions.
+  it('splits by target once the book is on target', () => {
+    const book = [holding('VOO', 6, 10_000), holding('VT', 4, 10_000)]
+    const { lines } = planSavings(book, [target('VOO', 60), target('VT', 40)], [], 50_000, 12, '2026-10-26')
+    expect(lines.map((l) => [l.symbol, l.suggested])).toEqual([
+      ['VOO', 30_000],
+      ['VT', 20_000],
+    ])
+  })
+
+  // Off target, a short horizon leans into what is short.
+  it('leans into the shortfall, harder over a shorter horizon', () => {
+    const book = [holding('VOO', 9, 10_000), holding('VT', 1, 10_000)]
+    const t = [target('VOO', 50), target('VT', 50)]
+    const vt = (months: number) =>
+      planSavings(book, t, [], 10_000, months, '2026-10-26').lines.find((l) => l.symbol === 'VT')!.suggested
+    expect(vt(3)).toBe(10_000) // all of it: VT is $800 short and 3 months is $300
+    expect(vt(60)).toBeLessThan(vt(3))
+    expect(vt(60)).toBeGreaterThan(5_000)
+  })
+
+  it('rounds to whole units and still adds up to the budget', () => {
+    const book = [holding('A', 1, 10_000), holding('B', 1, 10_000), holding('C', 1, 10_000)]
+    const { lines } = planSavings(book, [target('A', 33), target('B', 33), target('C', 34)], [], 10_000, 12, '2026-10-26')
+    expect(lines.every((l) => l.suggested % 100 === 0)).toBe(true)
+    expect(lines.reduce((s, l) => s + l.suggested, 0)).toBe(10_000)
+  })
+
+  it('shows what active plans put in now, and stops a plan outside the targets', () => {
+    const plans = [plan('VOO', '5', 10_000), plan('QQQM', '5,15,25', 10_000), plan('TSLA', '1', 5_000, '2026-09-30')]
+    const { lines } = planSavings([holding('VOO', 1, 10_000)], [target('VOO', 100)], plans, 40_000, 12, '2026-10-26')
+    expect(lines.find((l) => l.symbol === 'VOO')).toMatchObject({ current: 10_000, suggested: 40_000 })
+    expect(lines.find((l) => l.symbol === 'QQQM')).toMatchObject({ target: null, current: 30_000, suggested: 0 })
+    // An ended plan buys nothing now.
+    expect(lines.find((l) => l.symbol === 'TSLA')).toBeUndefined()
   })
 })
